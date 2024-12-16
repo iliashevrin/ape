@@ -1,6 +1,32 @@
 package com.android.commands.monkey.ape.agent;
 
-import java.util.Set;
+import java.util.*;
+import java.io.*;
+import com.android.commands.monkey.ape.*;
+import com.android.commands.monkey.ape.model.*;
+import com.android.commands.monkey.ape.agent.StatefulAgent;
+import com.android.commands.monkey.ape.naming.Name;
+import com.android.commands.monkey.ape.tree.GUITree;
+import com.android.commands.monkey.ape.tree.GUITreeBuilder;
+import com.android.commands.monkey.ape.tree.GUITreeNode;
+import com.android.commands.monkey.ape.utils.XPathBuilder;
+import com.android.commands.monkey.ape.utils.RandomHelper;
+import com.android.commands.monkey.MonkeySourceApe;
+
+import javax.xml.xpath.XPathConstants;
+import javax.xml.xpath.XPathExpression;
+import javax.xml.xpath.XPathExpressionException;
+
+import org.json.JSONException;
+import org.json.JSONObject;
+import org.w3c.dom.Document;
+import org.w3c.dom.Element;
+import org.w3c.dom.NodeList;
+
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+import android.content.ComponentName;
 
 public class DiffBasedAgent extends StatefulAgent {
 
@@ -67,7 +93,7 @@ public class DiffBasedAgent extends StatefulAgent {
                     String source = parseActivity(line);
 
                     if (source.endsWith("Activity") && !graph.containsKey(source)) {
-                        graph.put(source, new HashMap<>());
+                        graph.put(source, new HashMap<String, Set<ActionFromLog>>());
                     }
 
                     while (!line.contains("Action: ")) {
@@ -84,11 +110,11 @@ public class DiffBasedAgent extends StatefulAgent {
 
                     // Also add target as node in graph
                     if (target.endsWith("Activity") && !graph.containsKey(target)) {
-                        graph.put(target, new HashMap<>());
+                        graph.put(target, new HashMap<String, Set<ActionFromLog>>());
                     }
 
                     if (!graph.get(source).containsKey(target)) {
-                        graph.get(source).put(target, new ArrayList<>());
+                        graph.get(source).put(target, new HashSet<ActionFromLog>());
                     }
 
                     graph.get(source).get(target).add(new ActionFromLog(actionType, xpath));
@@ -140,7 +166,6 @@ public class DiffBasedAgent extends StatefulAgent {
                 return name;
             }
         }
-        Logger.wprintln("Cannot resolve node.");
         return null;
     }
 
@@ -220,6 +245,17 @@ public class DiffBasedAgent extends StatefulAgent {
     }
 
 
+    private String getMain() {
+        for (String activity : graph.keySet()) {
+            if (activity.contains("MainActivity")) {
+                return activity;
+            }
+        }
+
+        return null;
+    }
+
+
     // Finds next path to nearest activity in focus set that was not yet traversed
     private List<String> nextPath(Set<String> focusSet) {
 
@@ -230,7 +266,7 @@ public class DiffBasedAgent extends StatefulAgent {
         while (!q.isEmpty()) {
 
             List<String> curr = q.poll();
-            String lastActivity = curr.getLast();
+            String lastActivity = curr.get(curr.size()-1);
             visited.add(lastActivity);
 
             if (focusSet.contains(lastActivity)) {
@@ -254,10 +290,11 @@ public class DiffBasedAgent extends StatefulAgent {
     protected Action selectNewActionNonnull() {
 
         String newActivity = newState.getActivity();
+        String target = reachingPath.get(reachingPath.size() - 1);
 
         if (mode == Mode.REACHING) {
 
-            if (reachingPath.getLast().equals(newActivity) {
+            if (target.equals(newActivity)) {
                 mode = Mode.EXPLORING;
             } else {
 
@@ -265,22 +302,29 @@ public class DiffBasedAgent extends StatefulAgent {
 
                 Set<ActionFromLog> possibleActions = graph.get(newActivity).get(wantedActivity);
 
-                for (ActionFromLog action : possibleActions) {
-                    Name name = resolveName(action.targetXpath);
-                    ModelAction action = newState.getAction(name, action.actionType);
+                for (ActionFromLog actionFromLog : possibleActions) {
 
-                    if (action != null) {
-                        return action;
+                    try {
+                        Name name = resolveName(actionFromLog.targetXpath);
+                        ModelAction action = newState.getAction(name, actionFromLog.actionType);
+
+                        if (action != null) {
+                            return action;
+                        }
+                    } catch (XPathExpressionException e) {
+                        e.printStackTrace();
+                        // Check next action
                     }
+
                 }
 
                 // All actions towards current focus activity didn't work
-                return handleNullAction()
+                return handleNullAction();
             }
 
         } else if (mode == Mode.EXPLORING) {
 
-            if (!reachingPath.getLast().equals(newActivity) {
+            if (!target.equals(newActivity)) {
                 return newState.getBackAction();
             } else {
 
@@ -298,5 +342,23 @@ public class DiffBasedAgent extends StatefulAgent {
     @Override
     public void onRefillBuffer(Subsequence path) {
         throw new RuntimeException("Not implemented");
+    }
+
+    @Override
+    public String getLoggerName() {
+        return "DiffBased";
+    }
+
+    @Override
+    public void onBadState(int lastBadStateCount, int badStateCounter) {
+    }
+
+    @Override
+    public boolean onVoidGUITree(int counter) {
+        return false;
+    }
+
+    @Override
+    public void onActivityBlocked(ComponentName blockedActivity) {
     }
 }
