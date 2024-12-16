@@ -9,8 +9,12 @@ public class DiffBasedAgent extends StatefulAgent {
     Set<String> focusActivities = new HashSet<>();
     Set<String> allActivities = new HashSet<>();
 
+    Mode mode = Mode.REACHING;
+
+    List<String> reachingPath = new ArrayList<>();
+
     // Activity -> Activity -> Set of Actions
-    private static Map<String, Map<String, Set<ActionFromLog>>> graph = new HashMap<>();
+    private Map<String, Map<String, Set<ActionFromLog>>> graph = new HashMap<>();
 
     public static class ActionFromLog {
         ActionType actionType;
@@ -22,15 +26,30 @@ public class DiffBasedAgent extends StatefulAgent {
         }
     }
 
-    public DiffBasedAgent(MonkeySourceApe ape, Graph graph, String previousLog) {
+
+    public static enum Mode {
+        REACHING,
+        EXPLORING;
+    }
+
+    public DiffBasedAgent(MonkeySourceApe ape, Graph graph, String previousLog, String manifestFile, String focusSet) {
         super(ape, graph);
         this.logFile = previousLog;
 
         buildATGFromLog(previousLog);
+        parseFocusSet(focusSet);
+
+        this.reachingPath = nextPath(focusActivities);
+
+
+    }
+
+    private void parseFocusSet(String focusSet) {
+        this.focusActivities = new HashSet<>(Arrays.asList(focusSet.substring(1, focusSet.length()-1).split(",")));
     }
 
 
-    private static void buildATGFromLog(String previousLog) {
+    private void buildATGFromLog(String previousLog) {
 
         BufferedReader reader;
 
@@ -86,6 +105,47 @@ public class DiffBasedAgent extends StatefulAgent {
             e.printStackTrace();
         }
     }
+
+
+    /*
+    Copy from ReplayAgent.java
+    Should we extend the class?
+     */
+
+    protected Name resolveName(NodeList nodeList) {
+        int index = RandomHelper.nextInt(nodeList.getLength());
+        Element e = (Element) nodeList.item(index);
+        GUITreeNode node = GUITreeBuilder.getGUITreeNode(e);
+        if (node == null) {
+            return null;
+        }
+        return node.getXPathName();
+    }
+
+    protected Name resolveName(String target) throws XPathExpressionException {
+        int retry = 3;
+        while (retry--> 0) {
+            GUITree guiTree = newState.getLatestGUITree();
+            Document guiXml = guiTree.getDocument();
+            XPathExpression targetXPath = XPathBuilder.compileAbortOnError(target);
+            NodeList nodesByTarget = (NodeList) targetXPath.evaluate(guiXml, XPathConstants.NODESET);
+            Name name;
+            if (nodesByTarget.getLength() != 0) {
+                name = resolveName(nodesByTarget);
+            } else {
+                refreshNewState();
+                continue;
+            }
+            if (name != null) {
+                return name;
+            }
+        }
+        Logger.wprintln("Cannot resolve node.");
+        return null;
+    }
+
+
+
 
     private static String readLine(BufferedReader reader) throws IOException {
 
@@ -159,4 +219,84 @@ public class DiffBasedAgent extends StatefulAgent {
         return null;
     }
 
+
+    // Finds next path to nearest activity in focus set that was not yet traversed
+    private List<String> nextPath(Set<String> focusSet) {
+
+        Queue<List<String>> q = new LinkedList<>();
+        Set<String> visited = new HashSet<>();
+        q.add(Collections.singletonList(getMain()));
+
+        while (!q.isEmpty()) {
+
+            List<String> curr = q.poll();
+            String lastActivity = curr.getLast();
+            visited.add(lastActivity);
+
+            if (focusSet.contains(lastActivity)) {
+                return curr;
+            }
+
+            for (String next : graph.get(lastActivity).keySet()) {
+                if (!visited.contains(next)) {
+                    List<String> newPath = new ArrayList<>(curr);
+                    newPath.add(next);
+                    q.add(newPath);
+                }
+            }
+        }
+
+        return null;
+    }
+
+
+    @Override
+    protected Action selectNewActionNonnull() {
+
+        String newActivity = newState.getActivity();
+
+        if (mode == Mode.REACHING) {
+
+            if (reachingPath.getLast().equals(newActivity) {
+                mode = Mode.EXPLORING;
+            } else {
+
+                String wantedActivity = reachingPath.get(reachingPath.indexOf(newActivity) + 1);
+
+                Set<ActionFromLog> possibleActions = graph.get(newActivity).get(wantedActivity);
+
+                for (ActionFromLog action : possibleActions) {
+                    Name name = resolveName(action.targetXpath);
+                    ModelAction action = newState.getAction(name, action.actionType);
+
+                    if (action != null) {
+                        return action;
+                    }
+                }
+
+                // All actions towards current focus activity didn't work
+                return handleNullAction()
+            }
+
+        } else if (mode == Mode.EXPLORING) {
+
+            if (!reachingPath.getLast().equals(newActivity) {
+                return newState.getBackAction();
+            } else {
+
+            }
+        }
+
+        return null;
+    }
+
+    @Override
+    public void onBufferLoss(State actual, State expected) {
+        throw new RuntimeException("Not implemented");
+    }
+
+    @Override
+    public void onRefillBuffer(Subsequence path) {
+        throw new RuntimeException("Not implemented");
+    }
 }
