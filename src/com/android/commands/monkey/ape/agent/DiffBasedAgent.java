@@ -13,6 +13,12 @@ import com.android.commands.monkey.ape.utils.XPathBuilder;
 import com.android.commands.monkey.ape.utils.RandomHelper;
 import com.android.commands.monkey.MonkeySourceApe;
 
+import javax.xml.parsers.DocumentBuilder;
+import javax.xml.parsers.DocumentBuilderFactory;
+import javax.xml.parsers.ParserConfigurationException;
+
+import javax.xml.xpath.XPath;
+import javax.xml.xpath.XPathFactory;
 import javax.xml.xpath.XPathConstants;
 import javax.xml.xpath.XPathExpression;
 import javax.xml.xpath.XPathExpressionException;
@@ -22,6 +28,7 @@ import org.json.JSONObject;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
 import org.w3c.dom.NodeList;
+import org.xml.sax.SAXException;
 
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -30,14 +37,17 @@ import android.content.ComponentName;
 
 public class DiffBasedAgent extends StatefulAgent {
 
-    String logFile;
+    private String logFile;
 
-    Set<String> focusActivities = new HashSet<>();
-    Set<String> allActivities = new HashSet<>();
+    private Set<String> focusActivities = new HashSet<>();
+    private Set<String> allActivities = new HashSet<>();
+    private Set<String> erroneousActivities = new HashSet<>();
 
-    Mode mode = Mode.REACHING;
+    private Mode mode = Mode.REACHING;
 
-    List<String> reachingPath = new ArrayList<>();
+    private List<String> reachingPath = new ArrayList<>();
+
+    private Map<String, Map<String, Set<ActionFromLog>>> newEdges = new HashMap<>();
 
     // Activity -> Activity -> Set of Actions
     private Map<String, Map<String, Set<ActionFromLog>>> graph = new HashMap<>();
@@ -67,7 +77,13 @@ public class DiffBasedAgent extends StatefulAgent {
 
         this.reachingPath = nextPath(focusActivities);
 
-
+        try {
+            Document manifest = parseManifest(manifestFile);
+            this.allActivities = getActivities(manifest);
+        } catch (Exception e) {
+            e.printStackTrace();
+            throw new StopTestingException("Unable to parse manifest XML file");
+        }
     }
 
     private void parseFocusSet(String focusSet) {
@@ -245,6 +261,34 @@ public class DiffBasedAgent extends StatefulAgent {
     }
 
 
+
+    private static Document parseManifest(String manifestXml) throws SAXException, IOException, ParserConfigurationException {
+
+        File manifest = new File(manifestXml);
+
+        DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
+        factory.setValidating(true);
+        factory.setIgnoringElementContentWhitespace(true);
+        DocumentBuilder builder = factory.newDocumentBuilder();
+
+        return builder.parse(manifest);
+    }
+
+
+    private static Set<String> getActivities(Document manifest) throws ParserConfigurationException, IOException, SAXException, XPathExpressionException {
+
+        Set<String> activities = new HashSet<>();
+
+        XPath xPath = XPathFactory.newInstance().newXPath();
+        NodeList nodeList = (NodeList) xPath.compile("//activity").evaluate(manifest, XPathConstants.NODESET);
+        for (int i = 0; i < nodeList.getLength(); i++) {
+            activities.add(nodeList.item(i).getAttributes().getNamedItem("android:name").getNodeValue());
+        }
+        return activities;
+    }
+
+
+
     private String getMain() {
         for (String activity : graph.keySet()) {
             if (activity.contains("MainActivity")) {
@@ -257,7 +301,7 @@ public class DiffBasedAgent extends StatefulAgent {
 
 
     // Finds next path to nearest activity in focus set that was not yet traversed
-    private List<String> nextPath(Set<String> focusSet) {
+    private List<String> nextPath() {
 
         Queue<List<String>> q = new LinkedList<>();
         Set<String> visited = new HashSet<>();
@@ -269,7 +313,8 @@ public class DiffBasedAgent extends StatefulAgent {
             String lastActivity = curr.get(curr.size()-1);
             visited.add(lastActivity);
 
-            if (focusSet.contains(lastActivity)) {
+            // Find a path towards a focus activity that is not erroneous
+            if (focusActivities.contains(lastActivity) && !erroneousActivities.contains(lastActivity)) {
                 return curr;
             }
 
@@ -279,6 +324,38 @@ public class DiffBasedAgent extends StatefulAgent {
                     newPath.add(next);
                     q.add(newPath);
                 }
+            }
+        }
+
+        return null;
+    }
+
+    private Action getActionInReachingMode(String newActivity) {
+
+        if (!reachingPath.contains(newActivity)) {
+            return null;
+        }
+
+        String wantedActivity = reachingPath.get(reachingPath.indexOf(newActivity) + 1);
+
+        Set<ActionFromLog> possibleActions = graph.get(newActivity).get(wantedActivity);
+
+        // Should never happen
+        if (possibleActions == null) {
+            return null;
+        }
+
+        for (ActionFromLog actionFromLog : possibleActions) {
+            try {
+                Name name = resolveName(actionFromLog.targetXpath);
+                ModelAction action = newState.getAction(name, actionFromLog.actionType);
+
+                if (action != null) {
+                    return action;
+                }
+            } catch (XPathExpressionException e) {
+                e.printStackTrace();
+                // Check next action
             }
         }
 
@@ -298,36 +375,27 @@ public class DiffBasedAgent extends StatefulAgent {
                 mode = Mode.EXPLORING;
             } else {
 
-                String wantedActivity = reachingPath.get(reachingPath.indexOf(newActivity) + 1);
-
-                Set<ActionFromLog> possibleActions = graph.get(newActivity).get(wantedActivity);
-
-                for (ActionFromLog actionFromLog : possibleActions) {
-
-                    try {
-                        Name name = resolveName(actionFromLog.targetXpath);
-                        ModelAction action = newState.getAction(name, actionFromLog.actionType);
-
-                        if (action != null) {
-                            return action;
-                        }
-                    } catch (XPathExpressionException e) {
-                        e.printStackTrace();
-                        // Check next action
-                    }
-
-                }
+                ModelAction action = getActionInReachingMode(newActivity);
 
                 // All actions towards current focus activity didn't work
-                return handleNullAction();
+                if (action == null) {
+                    erroneousActivities.add(target);
+                    return getStartAction(nextRestartAction());
+                }
+
+                return action;
             }
 
         } else if (mode == Mode.EXPLORING) {
 
-            if (!target.equals(newActivity)) {
+            if (!target.equals(newActivity) && !focusActivities.contains(newActivity)) {
                 return newState.getBackAction();
             } else {
 
+                // If exhausted the target activity, remove from focusActivities set
+
+                focusActivities.remove(newActivity);
+                return getStartAction(nextRestartAction());
             }
         }
 
