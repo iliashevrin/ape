@@ -75,7 +75,7 @@ public class DiffBasedAgent extends StatefulAgent {
         buildATGFromLog(previousLog);
         parseFocusSet(focusSet);
 
-        this.reachingPath = nextPath(focusActivities);
+        this.reachingPath = nextPath();
 
         try {
             Document manifest = parseManifest(manifestFile);
@@ -315,6 +315,10 @@ public class DiffBasedAgent extends StatefulAgent {
 
             // Find a path towards a focus activity that is not erroneous
             if (focusActivities.contains(lastActivity) && !erroneousActivities.contains(lastActivity)) {
+
+                // Clear focus activity from graph, to be populated in the EXPLORING mode
+                graph.get(lastActivity).clear();
+
                 return curr;
             }
 
@@ -330,7 +334,7 @@ public class DiffBasedAgent extends StatefulAgent {
         return null;
     }
 
-    private Action getActionInReachingMode(String newActivity) {
+    private ModelAction getActionInReachingMode(String newActivity) {
 
         if (!reachingPath.contains(newActivity)) {
             return null;
@@ -367,34 +371,55 @@ public class DiffBasedAgent extends StatefulAgent {
     protected Action selectNewActionNonnull() {
 
         String newActivity = newState.getActivity();
+        String currentActivity = currentState.getActivity();
         String target = reachingPath.get(reachingPath.size() - 1);
+
+        if (mode == Mode.REACHING && target.equals(newActivity)) {
+            mode = Mode.EXPLORING;
+        }
 
         if (mode == Mode.REACHING) {
 
-            if (target.equals(newActivity)) {
-                mode = Mode.EXPLORING;
-            } else {
+            ModelAction action = getActionInReachingMode(newActivity);
 
-                ModelAction action = getActionInReachingMode(newActivity);
-
-                // All actions towards current focus activity didn't work
-                if (action == null) {
-                    erroneousActivities.add(target);
-                    return getStartAction(nextRestartAction());
-                }
-
-                return action;
+            // All actions towards current focus activity didn't work
+            if (action == null) {
+                erroneousActivities.add(target);
+                return getStartAction(nextRestartAction());
             }
 
+            return action;
+
+
         } else if (mode == Mode.EXPLORING) {
+
+            if (!graph.containsKey(currentActivity)) {
+                graph.put(currentActivity, new HashMap<String, Set<ActionFromLog>>());
+            }
+            if (!graph.get(currentActivity).containsKey(newActivity)) {
+                graph.get(currentActivity).put(newActivity, new HashSet<ActionFromLog>());
+            }
+
+            String xpath = parseTargetXpath(currentAction.toString());
+            graph.get(currentActivity).get(newActivity).add(new ActionFromLog(currentAction.getType(), xpath));
+
+            if (!graph.containsKey(newActivity)) {
+                graph.put(newActivity, new HashMap<String, Set<ActionFromLog>>());
+            }
 
             if (!target.equals(newActivity) && !focusActivities.contains(newActivity)) {
                 return newState.getBackAction();
             } else {
 
-                // If exhausted the target activity, remove from focusActivities set
-
+                for (ModelAction action : newState.targetedActions()) {
+                    if (!action.isVisited()) {
+                        return action;
+                    }
+                }
+                // If exhausted the activity, remove from focusActivities set
+                // Unless can return to a different focus activity through visited actions
                 focusActivities.remove(newActivity);
+                nextPath();
                 return getStartAction(nextRestartAction());
             }
         }
