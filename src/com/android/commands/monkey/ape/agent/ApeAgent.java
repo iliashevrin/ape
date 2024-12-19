@@ -79,6 +79,14 @@ public abstract class ApeAgent implements Agent {
         if (type.equals("random")) {
             return new RandomAgent(ape, graph);
         }
+
+        if (type.equals("diff-based")) {
+            String logFile = Config.get("ape.previousLog");
+            String manifestFile = Config.get("ape.manifest");
+            String focusSet = Config.get("ape.focusSet");
+            return new DiffBasedAgent(ape, graph, logFile, manifestFile, focusSet);
+        }
+
         if (type.equals("replay")) {
             String replayLog = Config.get("ape.replayLog");
             if (replayLog == null) {

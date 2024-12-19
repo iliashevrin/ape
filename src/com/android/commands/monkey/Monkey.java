@@ -904,6 +904,15 @@ public class Monkey {
                     mUseApe = true;
                     mApeAgent = nextOptionData();
                     Config.set("ape.agentType", mApeAgent);
+                } else if (opt.equals("--previous-log")) {
+                    String previousLog = nextOptionData();
+                    Config.set("ape.previousLog");
+                } else if (opt.equals("--manifest-file")) {
+                    String manifest = nextOptionData();
+                    Config.set("ape.manifest");
+                } else if (opt.equals("--focus-set")) {
+                    String focusSet = nextOptionData();
+                    Config.set("ape.focusSet");
                 } else if (opt.equals("--ape-model")) {
                     String modelFile = nextOptionData();
                     Config.set("ape.modelFile", modelFile);
