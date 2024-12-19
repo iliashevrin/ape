@@ -73,18 +73,23 @@ public class DiffBasedAgent extends StatefulAgent {
         super(ape, graph);
         this.logFile = previousLog;
 
-        buildATGFromLog(previousLog);
         parseFocusSet(focusSet);
 
-        this.reachingPath = nextPath();
+        if (focusActivities.isEmpty()) {
+            Logger.println("No focus activities, can stop execution");
+        } else {
+            buildATGFromLog(previousLog);
+            this.reachingPath = nextPath();
 
-        try {
-            Document manifest = parseManifest(manifestFile);
-            this.allActivities = getActivities(manifest);
-        } catch (Exception e) {
-            e.printStackTrace();
-            throw new StopTestingException("Unable to parse manifest XML file");
+            try {
+                Document manifest = parseManifest(manifestFile);
+                this.allActivities = getActivities(manifest);
+            } catch (Exception e) {
+                e.printStackTrace();
+                throw new StopTestingException("Unable to parse manifest XML file");
+            }
         }
+
     }
 
     private void parseFocusSet(String focusSet) {
@@ -316,10 +321,6 @@ public class DiffBasedAgent extends StatefulAgent {
 
             // Find a path towards a focus activity that is not erroneous
             if (focusActivities.contains(lastActivity) && !erroneousActivities.contains(lastActivity)) {
-
-                // Clear focus activity from graph, to be populated in the EXPLORING mode
-                graph.get(lastActivity).clear();
-
                 return curr;
             }
 
@@ -400,21 +401,17 @@ public class DiffBasedAgent extends StatefulAgent {
                 focusActivities.add(newActivity);
             }
 
-            if (!graph.containsKey(currentActivity)) {
-                graph.put(currentActivity, new HashMap<String, Set<ActionFromLog>>());
-            }
-            if (!graph.get(currentActivity).containsKey(newActivity)) {
-                graph.get(currentActivity).put(newActivity, new HashSet<ActionFromLog>());
-            }
-
-            // Update in graph only activities from focus set or new
+            // Update as new edgess only activities from focus set or new
             if (focusActivities.contains(currentActivity)) {
-                String xpath = parseTargetXpath(currentAction.toString());
-                graph.get(currentActivity).get(newActivity).add(new ActionFromLog(currentAction.getType(), xpath));
-            }
 
-            if (!graph.containsKey(newActivity)) {
-                graph.put(newActivity, new HashMap<String, Set<ActionFromLog>>());
+                if (!newEdges.containsKey(currentActivity)) {
+                    newEdges.put(currentActivity, new HashMap<String, Set<ActionFromLog>>());
+                }
+                if (!newEdges.get(currentActivity).containsKey(newActivity)) {
+                    newEdges.get(currentActivity).put(newActivity, new HashSet<ActionFromLog>());
+                }
+                String xpath = parseTargetXpath(currentAction.toString());
+                newEdges.get(currentActivity).get(newActivity).add(new ActionFromLog(currentAction.getType(), xpath));
             }
 
             // If not in focus, go back
@@ -429,9 +426,11 @@ public class DiffBasedAgent extends StatefulAgent {
                         return action;
                     }
                 }
-                // If exhausted the activity, remove from focusActivities set
+                // If exhausted the activity, remove from focusActivities set and update graph
                 focusActivities.remove(newActivity);
                 exploringStates.remove(newState);
+
+                graph.put(newActivity, newEdges.get(newActivity));
 
                 // Check if can return to another focus activity that is currently being explored through visited actions
                 for (State state : exploringStates) {
@@ -445,12 +444,19 @@ public class DiffBasedAgent extends StatefulAgent {
 
                 // Choose a new focus action and start again
                 // Should clear exploringStates?
-                nextPath();
-                mode = Mode.REACHING;
-                return getStartAction(nextRestartAction());
+                if (!focusActivities.isEmpty()) {
+                    nextPath();
+                    mode = Mode.REACHING;
+                    return getStartAction(nextRestartAction());
+                }
+
+                Logger.println("No more focus activities, can stop execution");
             }
         }
 
+        Logger.println("Null action");
+
+        // Finished the dynamic analysis
         return null;
     }
 
