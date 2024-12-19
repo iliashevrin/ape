@@ -42,6 +42,7 @@ public class DiffBasedAgent extends StatefulAgent {
     private Set<String> focusActivities = new HashSet<>();
     private Set<String> allActivities = new HashSet<>();
     private Set<String> erroneousActivities = new HashSet<>();
+    private Set<State> exploringStates = new HashSet<>();
 
     private Mode mode = Mode.REACHING;
 
@@ -383,6 +384,7 @@ public class DiffBasedAgent extends StatefulAgent {
             ModelAction action = getActionInReachingMode(newActivity);
 
             // All actions towards current focus activity didn't work
+            // Maybe it will be possible to reach it via other changed activities
             if (action == null) {
                 erroneousActivities.add(target);
                 return getStartAction(nextRestartAction());
@@ -393,6 +395,11 @@ public class DiffBasedAgent extends StatefulAgent {
 
         } else if (mode == Mode.EXPLORING) {
 
+            // If spotted an activity not existing in previous version, add it to focus
+            if (!allActivities.contains(newActivity)) {
+                focusActivities.add(newActivity);
+            }
+
             if (!graph.containsKey(currentActivity)) {
                 graph.put(currentActivity, new HashMap<String, Set<ActionFromLog>>());
             }
@@ -400,16 +407,22 @@ public class DiffBasedAgent extends StatefulAgent {
                 graph.get(currentActivity).put(newActivity, new HashSet<ActionFromLog>());
             }
 
-            String xpath = parseTargetXpath(currentAction.toString());
-            graph.get(currentActivity).get(newActivity).add(new ActionFromLog(currentAction.getType(), xpath));
+            // Update in graph only activities from focus set or new
+            if (focusActivities.contains(currentActivity)) {
+                String xpath = parseTargetXpath(currentAction.toString());
+                graph.get(currentActivity).get(newActivity).add(new ActionFromLog(currentAction.getType(), xpath));
+            }
 
             if (!graph.containsKey(newActivity)) {
                 graph.put(newActivity, new HashMap<String, Set<ActionFromLog>>());
             }
 
-            if (!target.equals(newActivity) && !focusActivities.contains(newActivity)) {
+            // If not in focus, go back
+            if (!focusActivities.contains(newActivity)) {
                 return newState.getBackAction();
             } else {
+
+                exploringStates.add(newState);
 
                 for (ModelAction action : newState.targetedActions()) {
                     if (!action.isVisited()) {
@@ -417,9 +430,23 @@ public class DiffBasedAgent extends StatefulAgent {
                     }
                 }
                 // If exhausted the activity, remove from focusActivities set
-                // Unless can return to a different focus activity through visited actions
                 focusActivities.remove(newActivity);
+                exploringStates.remove(newState);
+
+                // Check if can return to another focus activity that is currently being explored through visited actions
+                for (State state : exploringStates) {
+                    if (!state.getActivity().equals(newActivity)) {
+                        Set<StateTransition> transitions = graph.getInStateTransitions(newState, state);
+                        if (!transitions.isEmpty()) {
+                            return transitions.get(0).getAction();
+                        }
+                    }
+                }
+
+                // Choose a new focus action and start again
+                // Should clear exploringStates?
                 nextPath();
+                mode = Mode.REACHING;
                 return getStartAction(nextRestartAction());
             }
         }
