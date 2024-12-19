@@ -12,6 +12,7 @@ import com.android.commands.monkey.ape.tree.GUITreeNode;
 import com.android.commands.monkey.ape.utils.XPathBuilder;
 import com.android.commands.monkey.ape.utils.RandomHelper;
 import com.android.commands.monkey.MonkeySourceApe;
+import com.android.commands.monkey.ape.utils.Logger;
 
 import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;
@@ -434,10 +435,9 @@ public class DiffBasedAgent extends StatefulAgent {
 
                 // Check if can return to another focus activity that is currently being explored through visited actions
                 for (State state : exploringStates) {
-                    if (!state.getActivity().equals(newActivity)) {
-                        Set<StateTransition> transitions = graph.getInStateTransitions(newState, state);
-                        if (!transitions.isEmpty()) {
-                            return transitions.get(0).getAction();
+                    for (StateTransition st : getGraph().getInStateTransitions(newState)) {
+                        if (st.getTarget().equals(state) && !state.getActivity().equals(newActivity)) {
+                            return st.getAction();
                         }
                     }
                 }
