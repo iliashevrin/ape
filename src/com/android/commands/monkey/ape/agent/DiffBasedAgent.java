@@ -45,7 +45,7 @@ public class DiffBasedAgent extends StatefulAgent {
     private Set<String> erroneousActivities = new HashSet<>();
     private Set<State> exploringStates = new HashSet<>();
 
-    private Mode mode = Mode.REACHING;
+    private Mode mode = Mode.INITIALIZING;
 
     private List<String> reachingPath = new ArrayList<>();
 
@@ -66,6 +66,8 @@ public class DiffBasedAgent extends StatefulAgent {
 
 
     public static enum Mode {
+
+        INITIALIZING,
         REACHING,
         EXPLORING;
     }
@@ -80,7 +82,6 @@ public class DiffBasedAgent extends StatefulAgent {
             Logger.println("No focus activities, can stop execution");
         } else {
             buildATGFromLog(previousLog);
-            this.reachingPath = nextPath();
 
             try {
                 Document manifest = parseManifest(manifestFile);
@@ -274,7 +275,7 @@ public class DiffBasedAgent extends StatefulAgent {
         File manifest = new File(manifestXml);
 
         DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
-        factory.setValidating(true);
+//        factory.setValidating(true);
         factory.setIgnoringElementContentWhitespace(true);
         DocumentBuilder builder = factory.newDocumentBuilder();
 
@@ -322,6 +323,7 @@ public class DiffBasedAgent extends StatefulAgent {
 
             // Find a path towards a focus activity that is not erroneous
             if (focusActivities.contains(lastActivity) && !erroneousActivities.contains(lastActivity)) {
+                Logger.format("New activity to reach is %s", lastActivity);
                 return curr;
             }
 
@@ -354,12 +356,17 @@ public class DiffBasedAgent extends StatefulAgent {
 
         for (ActionFromLog actionFromLog : possibleActions) {
             try {
+                Logger.format("New activity=%s; Wanted activity=%s; Action=%s; Xpath=%s",
+                        newActivity, wantedActivity, actionFromLog.actionType, actionFromLog.targetXpath);
                 Name name = resolveName(actionFromLog.targetXpath);
-                ModelAction action = newState.getAction(name, actionFromLog.actionType);
 
-                if (action != null) {
-                    return action;
+                if (name != null) {
+                    ModelAction action = newState.getAction(name, actionFromLog.actionType);
+                    if (action != null) {
+                        return action;
+                    }
                 }
+
             } catch (XPathExpressionException e) {
                 e.printStackTrace();
                 // Check next action
@@ -369,12 +376,22 @@ public class DiffBasedAgent extends StatefulAgent {
         return null;
     }
 
+    private Action initialize() {
+        reachingPath = nextPath();
+        mode = Mode.REACHING;
+        return getStartAction(nextRestartAction());
+    }
+
 
     @Override
     protected Action selectNewActionNonnull() {
 
+        if (mode == Mode.INITIALIZING) {
+            return initialize();
+        }
+
         String newActivity = newState.getActivity();
-        String currentActivity = currentState.getActivity();
+
         String target = reachingPath.get(reachingPath.size() - 1);
 
         if (mode == Mode.REACHING && target.equals(newActivity)) {
@@ -402,17 +419,21 @@ public class DiffBasedAgent extends StatefulAgent {
                 focusActivities.add(newActivity);
             }
 
-            // Update as new edgess only activities from focus set or new
-            if (focusActivities.contains(currentActivity)) {
+            if (currentState != null) {
+                String currentActivity = currentState.getActivity();
 
-                if (!newEdges.containsKey(currentActivity)) {
-                    newEdges.put(currentActivity, new HashMap<String, Set<ActionFromLog>>());
+                // Update as new edgess only activities from focus set or new
+                if (focusActivities.contains(currentActivity)) {
+
+                    if (!newEdges.containsKey(currentActivity)) {
+                        newEdges.put(currentActivity, new HashMap<String, Set<ActionFromLog>>());
+                    }
+                    if (!newEdges.get(currentActivity).containsKey(newActivity)) {
+                        newEdges.get(currentActivity).put(newActivity, new HashSet<ActionFromLog>());
+                    }
+                    String xpath = parseTargetXpath(currentAction.toString());
+                    newEdges.get(currentActivity).get(newActivity).add(new ActionFromLog(currentAction.getType(), xpath));
                 }
-                if (!newEdges.get(currentActivity).containsKey(newActivity)) {
-                    newEdges.get(currentActivity).put(newActivity, new HashSet<ActionFromLog>());
-                }
-                String xpath = parseTargetXpath(currentAction.toString());
-                newEdges.get(currentActivity).get(newActivity).add(new ActionFromLog(currentAction.getType(), xpath));
             }
 
             // If not in focus, go back
@@ -421,6 +442,8 @@ public class DiffBasedAgent extends StatefulAgent {
             } else {
 
                 exploringStates.add(newState);
+
+                Logger.format("Exploring %s, total actions to explore %d", newActivity, newState.targetedActions());
 
                 for (ModelAction action : newState.targetedActions()) {
                     if (!action.isVisited()) {
@@ -445,9 +468,7 @@ public class DiffBasedAgent extends StatefulAgent {
                 // Choose a new focus action and start again
                 // Should clear exploringStates?
                 if (!focusActivities.isEmpty()) {
-                    nextPath();
-                    mode = Mode.REACHING;
-                    return getStartAction(nextRestartAction());
+                    return initialize();
                 }
 
                 Logger.println("No more focus activities, can stop execution");
