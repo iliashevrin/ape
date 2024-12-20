@@ -94,7 +94,7 @@ public class DiffBasedAgent extends StatefulAgent {
     }
 
     private void parseFocusSet(String focusSet) {
-        this.focusActivities = new HashSet<>(Arrays.asList(focusSet.substring(1, focusSet.length()-1).split(",")));
+        this.focusActivities = new HashSet<>(Arrays.asList(focusSet.split(",")));
     }
 
 

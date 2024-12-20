@@ -84,6 +84,9 @@ public abstract class ApeAgent implements Agent {
             String logFile = Config.get("ape.previousLog");
             String manifestFile = Config.get("ape.manifest");
             String focusSet = Config.get("ape.focusSet");
+            Logger.println(logFile);
+            Logger.println(manifestFile);
+            Logger.println(focusSet);
             return new DiffBasedAgent(ape, graph, logFile, manifestFile, focusSet);
         }
 

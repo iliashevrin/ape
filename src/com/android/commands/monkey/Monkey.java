@@ -878,6 +878,7 @@ public class Monkey {
         try {
             String opt;
             while ((opt = nextOption()) != null) {
+                Logger.println(opt);
                 if (opt.equals("-s")) {
                     mSeed = nextOptionLong("Seed");
                 } else if (opt.equals("-p")) {
