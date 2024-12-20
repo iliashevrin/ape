@@ -362,6 +362,7 @@ public class DiffBasedAgent extends StatefulAgent {
 
                 if (name != null) {
                     ModelAction action = newState.getAction(name, actionFromLog.actionType);
+                    Logger.format("Found action=%s", action);
                     if (action != null) {
                         return action;
                     }
