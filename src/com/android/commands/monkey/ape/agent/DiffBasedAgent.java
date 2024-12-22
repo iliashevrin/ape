@@ -415,88 +415,105 @@ public class DiffBasedAgent extends StatefulAgent {
             mode = Mode.REACHING;
             this.reachingPath = path;
             String target = reachingPath.get(reachingPath.size() - 1);
+
+            if (source.equals(target)) {
+                mode = mode.EXPLORING;
+                return exploringModeAction(source);
+            }
+
             return reachingModeAction(source, target);
         }
 
         return getStartAction(nextRestartAction());
     }
 
+    private Action exploringModeAction(String newActivity) {
+        // If spotted an activity not existing in previous version, add it to focus
+        if (!allActivities.contains(newActivity)) {
+            focusActivities.add(newActivity);
+        }
+
+        if (currentState != null) {
+            String currentActivity = currentState.getActivity();
+
+            // Update as new edgess only activities from focus set or new
+            if (focusActivities.contains(currentActivity)) {
+
+                if (!newEdges.containsKey(currentActivity)) {
+                    newEdges.put(currentActivity, new HashMap<String, Set<ActionFromLog>>());
+                }
+                if (!newEdges.get(currentActivity).containsKey(newActivity)) {
+                    newEdges.get(currentActivity).put(newActivity, new HashSet<ActionFromLog>());
+                }
+                String xpath = parseTargetXpath(currentAction.toString());
+                newEdges.get(currentActivity).get(newActivity).add(new ActionFromLog(currentAction.getType(), xpath));
+            }
+        }
+
+        // If not in focus, go back
+        if (!focusActivities.contains(newActivity)) {
+            return newState.getBackAction();
+        } else {
+
+            exploringStates.add(newState);
+
+            Logger.format("Exploring %s, total actions to explore %d", newActivity, newState.targetedActions().size());
+
+            for (ModelAction action : newState.targetedActions()) {
+                if (!action.isVisited()) {
+                    return action;
+                }
+            }
+            // If exhausted the activity, remove from focusActivities set and update graph
+            focusActivities.remove(newActivity);
+            exploringStates.remove(newState);
+
+            graph.put(newActivity, newEdges.get(newActivity));
+
+            // Check if can return to another focus activity that is currently being explored through visited actions
+            for (State state : exploringStates) {
+                for (StateTransition st : getGraph().getInStateTransitions(newState)) {
+                    if (st.getTarget().equals(state) && !state.getActivity().equals(newActivity)) {
+                        return st.getAction();
+                    }
+                }
+            }
+
+            // Choose a new focus action and start again
+            // Should clear exploringStates?
+            if (!focusActivities.isEmpty()) {
+                return findNextPath(newActivity);
+            }
+
+            Logger.println("No more focus activities, can stop execution");
+        }
+
+        // Finished all activities
+        return null;
+    }
+
 
     @Override
     protected Action selectNewActionNonnull() {
 
-        String newActivity = newState.getActivity();
+        String source = newState.getActivity();
+
+        if (mode == Mode.INITIALIZING) {
+            return findNextPath(source);
+        }
+
         String target = reachingPath.get(reachingPath.size() - 1);
 
-        if (target.equals(newActivity)) {
+        if (target.equals(source)) {
             mode = Mode.EXPLORING;
         }
 
-        if (mode == Mode.INITIALIZING) {
-            return findNextPath(newActivity);
-        } else if (mode == Mode.REACHING) {
-            return reachingModeAction(newActivity, target);
-        } else if (mode == Mode.EXPLORING) {
+        if (mode == Mode.REACHING) {
+            return reachingModeAction(source, target);
+        }
 
-            // If spotted an activity not existing in previous version, add it to focus
-            if (!allActivities.contains(newActivity)) {
-                focusActivities.add(newActivity);
-            }
-
-            if (currentState != null) {
-                String currentActivity = currentState.getActivity();
-
-                // Update as new edgess only activities from focus set or new
-                if (focusActivities.contains(currentActivity)) {
-
-                    if (!newEdges.containsKey(currentActivity)) {
-                        newEdges.put(currentActivity, new HashMap<String, Set<ActionFromLog>>());
-                    }
-                    if (!newEdges.get(currentActivity).containsKey(newActivity)) {
-                        newEdges.get(currentActivity).put(newActivity, new HashSet<ActionFromLog>());
-                    }
-                    String xpath = parseTargetXpath(currentAction.toString());
-                    newEdges.get(currentActivity).get(newActivity).add(new ActionFromLog(currentAction.getType(), xpath));
-                }
-            }
-
-            // If not in focus, go back
-            if (!focusActivities.contains(newActivity)) {
-                return newState.getBackAction();
-            } else {
-
-                exploringStates.add(newState);
-
-                Logger.format("Exploring %s, total actions to explore %d", newActivity, newState.targetedActions().size());
-
-                for (ModelAction action : newState.targetedActions()) {
-                    if (!action.isVisited()) {
-                        return action;
-                    }
-                }
-                // If exhausted the activity, remove from focusActivities set and update graph
-                focusActivities.remove(newActivity);
-                exploringStates.remove(newState);
-
-                graph.put(newActivity, newEdges.get(newActivity));
-
-                // Check if can return to another focus activity that is currently being explored through visited actions
-                for (State state : exploringStates) {
-                    for (StateTransition st : getGraph().getInStateTransitions(newState)) {
-                        if (st.getTarget().equals(state) && !state.getActivity().equals(newActivity)) {
-                            return st.getAction();
-                        }
-                    }
-                }
-
-                // Choose a new focus action and start again
-                // Should clear exploringStates?
-                if (!focusActivities.isEmpty()) {
-                    return findNextPath(newActivity);
-                }
-
-                Logger.println("No more focus activities, can stop execution");
-            }
+        if (mode == Mode.EXPLORING) {
+            return exploringModeAction(source);
         }
 
         Logger.println("Null action");
