@@ -1,5 +1,8 @@
 package com.android.commands.monkey.ape.agent;
 
+import javax.xml.transform.*;
+import javax.xml.transform.dom.DOMSource;
+import javax.xml.transform.stream.StreamResult;
 import java.util.*;
 import java.io.*;
 import com.android.commands.monkey.ape.*;
@@ -156,6 +159,14 @@ public class DiffBasedAgent extends StatefulAgent {
         }
     }
 
+    public static String documentToString(Document document) throws TransformerException {
+        TransformerFactory transformerFactory = TransformerFactory.newInstance();
+        Transformer transformer = transformerFactory.newTransformer();
+        StringWriter stringWriter = new StringWriter();
+        transformer.transform(new DOMSource(document), new StreamResult(stringWriter));
+        return stringWriter.toString();
+    }
+
 
     /*
     Copy from ReplayAgent.java
@@ -172,11 +183,12 @@ public class DiffBasedAgent extends StatefulAgent {
         return node.getXPathName();
     }
 
-    protected Name resolveName(String target) throws XPathExpressionException {
-        int retry = 3;
+    protected Name resolveName(String target) throws XPathExpressionException, TransformerException {
+        int retry = 2;
         while (retry--> 0) {
             GUITree guiTree = newState.getLatestGUITree();
             Document guiXml = guiTree.getDocument();
+            Logger.println(documentToString(guiXml));
             XPathExpression targetXPath = XPathBuilder.compileAbortOnError(target);
             NodeList nodesByTarget = (NodeList) targetXPath.evaluate(guiXml, XPathConstants.NODESET);
             Name name;
@@ -309,11 +321,12 @@ public class DiffBasedAgent extends StatefulAgent {
 
 
     // Finds next path to nearest activity in focus set that was not yet traversed
-    private List<String> nextPath() {
+    private List<String> nextPath(String source) {
 
         Queue<List<String>> q = new LinkedList<>();
         Set<String> visited = new HashSet<>();
-        q.add(Collections.singletonList(getMain()));
+//        q.add(Collections.singletonList(getMain()));
+        q.add(Collections.singletonList(source));
 
         while (!q.isEmpty()) {
 
@@ -339,7 +352,7 @@ public class DiffBasedAgent extends StatefulAgent {
         return null;
     }
 
-    private ModelAction getActionInReachingMode(String newActivity) {
+    private ModelAction getActionFromPath(String newActivity) {
 
         if (!reachingPath.contains(newActivity)) {
             return null;
@@ -353,6 +366,9 @@ public class DiffBasedAgent extends StatefulAgent {
         if (possibleActions == null) {
             return null;
         }
+
+        Logger.format("New activity=%s; Wanted activity=%s; #actions=%d",
+                newActivity, wantedActivity, possibleActions.size());
 
         for (ActionFromLog actionFromLog : possibleActions) {
             try {
@@ -368,7 +384,7 @@ public class DiffBasedAgent extends StatefulAgent {
                     }
                 }
 
-            } catch (XPathExpressionException e) {
+            } catch (Exception e) {
                 e.printStackTrace();
                 // Check next action
             }
@@ -377,9 +393,31 @@ public class DiffBasedAgent extends StatefulAgent {
         return null;
     }
 
-    private Action initialize() {
-        reachingPath = nextPath();
-        mode = Mode.REACHING;
+    private Action reachingModeAction(String newActivity, String target) {
+
+        ModelAction action = getActionFromPath(newActivity);
+
+        // All actions towards current focus activity didn't work
+        // Maybe it will be possible to reach it via other changed activities
+        if (action == null) {
+            erroneousActivities.add(target);
+            return findNextPath(newActivity);
+        }
+
+        return action;
+    }
+
+    private Action findNextPath(String source) {
+
+        List<String> path = nextPath(source);
+
+        if (path != null) {
+            mode = Mode.REACHING;
+            this.reachingPath = path;
+            String target = reachingPath.get(reachingPath.size() - 1);
+            return reachingModeAction(source, target);
+        }
+
         return getStartAction(nextRestartAction());
     }
 
@@ -387,32 +425,17 @@ public class DiffBasedAgent extends StatefulAgent {
     @Override
     protected Action selectNewActionNonnull() {
 
-        if (mode == Mode.INITIALIZING) {
-            return initialize();
-        }
-
         String newActivity = newState.getActivity();
-
         String target = reachingPath.get(reachingPath.size() - 1);
 
-        if (mode == Mode.REACHING && target.equals(newActivity)) {
+        if (target.equals(newActivity)) {
             mode = Mode.EXPLORING;
         }
 
-        if (mode == Mode.REACHING) {
-
-            ModelAction action = getActionInReachingMode(newActivity);
-
-            // All actions towards current focus activity didn't work
-            // Maybe it will be possible to reach it via other changed activities
-            if (action == null) {
-                erroneousActivities.add(target);
-                return getStartAction(nextRestartAction());
-            }
-
-            return action;
-
-
+        if (mode == Mode.INITIALIZING) {
+            return findNextPath(newActivity);
+        } else if (mode == Mode.REACHING) {
+            return reachingModeAction(newActivity, target);
         } else if (mode == Mode.EXPLORING) {
 
             // If spotted an activity not existing in previous version, add it to focus
@@ -444,7 +467,7 @@ public class DiffBasedAgent extends StatefulAgent {
 
                 exploringStates.add(newState);
 
-                Logger.format("Exploring %s, total actions to explore %d", newActivity, newState.targetedActions());
+                Logger.format("Exploring %s, total actions to explore %d", newActivity, newState.targetedActions().size());
 
                 for (ModelAction action : newState.targetedActions()) {
                     if (!action.isVisited()) {
@@ -469,7 +492,7 @@ public class DiffBasedAgent extends StatefulAgent {
                 // Choose a new focus action and start again
                 // Should clear exploringStates?
                 if (!focusActivities.isEmpty()) {
-                    return initialize();
+                    return findNextPath(newActivity);
                 }
 
                 Logger.println("No more focus activities, can stop execution");
