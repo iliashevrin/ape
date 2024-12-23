@@ -188,7 +188,7 @@ public class DiffBasedAgent extends StatefulAgent {
         while (retry--> 0) {
             GUITree guiTree = newState.getLatestGUITree();
             Document guiXml = guiTree.getDocument();
-            Logger.println(documentToString(guiXml));
+//            Logger.println(documentToString(guiXml));
             XPathExpression targetXPath = XPathBuilder.compileAbortOnError(target);
             NodeList nodesByTarget = (NodeList) targetXPath.evaluate(guiXml, XPathConstants.NODESET);
             Name name;
@@ -352,28 +352,28 @@ public class DiffBasedAgent extends StatefulAgent {
         return null;
     }
 
-    private ModelAction getActionFromPath(String newActivity) {
+    private ModelAction getActionFromPath(String source) {
 
-        if (!reachingPath.contains(newActivity)) {
+        if (!reachingPath.contains(source)) {
             return null;
         }
 
-        String wantedActivity = reachingPath.get(reachingPath.indexOf(newActivity) + 1);
+        String next = reachingPath.get(reachingPath.indexOf(source) + 1);
 
-        Set<ActionFromLog> possibleActions = graph.get(newActivity).get(wantedActivity);
+        Set<ActionFromLog> possibleActions = graph.get(source).get(next);
 
         // Should never happen
         if (possibleActions == null) {
             return null;
         }
 
-        Logger.format("New activity=%s; Wanted activity=%s; #actions=%d",
-                newActivity, wantedActivity, possibleActions.size());
+        Logger.format("Source=%s; Next=%s; #actions=%d",
+                source, next, possibleActions.size());
 
         for (ActionFromLog actionFromLog : possibleActions) {
             try {
-                Logger.format("New activity=%s; Wanted activity=%s; Action=%s; Xpath=%s",
-                        newActivity, wantedActivity, actionFromLog.actionType, actionFromLog.targetXpath);
+                Logger.format("Source=%s; Next=%s; Action=%s; Xpath=%s",
+                        source, next, actionFromLog.actionType, actionFromLog.targetXpath);
                 Name name = resolveName(actionFromLog.targetXpath);
 
                 if (name != null) {
@@ -393,15 +393,16 @@ public class DiffBasedAgent extends StatefulAgent {
         return null;
     }
 
-    private Action reachingModeAction(String newActivity, String target) {
+    private Action reachingModeAction(String source, String target) {
 
-        ModelAction action = getActionFromPath(newActivity);
+        ModelAction action = getActionFromPath(source);
 
         // All actions towards current focus activity didn't work
         // Maybe it will be possible to reach it via other changed activities
         if (action == null) {
+            Logger.format("No viable action from source %s to target activity %s", source, target);
             erroneousActivities.add(target);
-            return findNextPath(newActivity);
+            return findNextPath(source);
         }
 
         return action;
@@ -415,6 +416,7 @@ public class DiffBasedAgent extends StatefulAgent {
             mode = Mode.REACHING;
             this.reachingPath = path;
             String target = reachingPath.get(reachingPath.size() - 1);
+            Logger.format("Found next path from source activity %s to new target activity %s", source, target);
 
             if (source.equals(target)) {
                 mode = mode.EXPLORING;
@@ -424,40 +426,43 @@ public class DiffBasedAgent extends StatefulAgent {
             return reachingModeAction(source, target);
         }
 
+        Logger.format("Could not find path from source activity %s to any target, restarting", source);
+        mode = Mode.INITIALIZING;
+
         return getStartAction(nextRestartAction());
     }
 
-    private Action exploringModeAction(String newActivity) {
+    private Action exploringModeAction(String source) {
         // If spotted an activity not existing in previous version, add it to focus
-        if (!allActivities.contains(newActivity)) {
-            focusActivities.add(newActivity);
+        if (!allActivities.contains(source)) {
+            focusActivities.add(source);
         }
 
         if (currentState != null) {
-            String currentActivity = currentState.getActivity();
+            String previous = currentState.getActivity();
 
             // Update as new edgess only activities from focus set or new
-            if (focusActivities.contains(currentActivity)) {
+            if (focusActivities.contains(previous)) {
 
-                if (!newEdges.containsKey(currentActivity)) {
-                    newEdges.put(currentActivity, new HashMap<String, Set<ActionFromLog>>());
+                if (!newEdges.containsKey(previous)) {
+                    newEdges.put(previous, new HashMap<String, Set<ActionFromLog>>());
                 }
-                if (!newEdges.get(currentActivity).containsKey(newActivity)) {
-                    newEdges.get(currentActivity).put(newActivity, new HashSet<ActionFromLog>());
+                if (!newEdges.get(previous).containsKey(source)) {
+                    newEdges.get(previous).put(source, new HashSet<ActionFromLog>());
                 }
                 String xpath = parseTargetXpath(currentAction.toString());
-                newEdges.get(currentActivity).get(newActivity).add(new ActionFromLog(currentAction.getType(), xpath));
+                newEdges.get(previous).get(source).add(new ActionFromLog(currentAction.getType(), xpath));
             }
         }
 
         // If not in focus, go back
-        if (!focusActivities.contains(newActivity)) {
+        if (!focusActivities.contains(source)) {
             return newState.getBackAction();
         } else {
 
             exploringStates.add(newState);
 
-            Logger.format("Exploring %s, total actions to explore %d", newActivity, newState.targetedActions().size());
+            Logger.format("Exploring activity %s, total actions to explore %d", source, newState.targetedActions().size());
 
             for (ModelAction action : newState.targetedActions()) {
                 if (!action.isVisited()) {
@@ -465,15 +470,15 @@ public class DiffBasedAgent extends StatefulAgent {
                 }
             }
             // If exhausted the activity, remove from focusActivities set and update graph
-            focusActivities.remove(newActivity);
+            focusActivities.remove(source);
             exploringStates.remove(newState);
 
-            graph.put(newActivity, newEdges.get(newActivity));
+            graph.put(source, newEdges.get(source));
 
             // Check if can return to another focus activity that is currently being explored through visited actions
             for (State state : exploringStates) {
                 for (StateTransition st : getGraph().getInStateTransitions(newState)) {
-                    if (st.getTarget().equals(state) && !state.getActivity().equals(newActivity)) {
+                    if (st.getTarget().equals(state) && !state.getActivity().equals(source)) {
                         return st.getAction();
                     }
                 }
@@ -482,7 +487,7 @@ public class DiffBasedAgent extends StatefulAgent {
             // Choose a new focus action and start again
             // Should clear exploringStates?
             if (!focusActivities.isEmpty()) {
-                return findNextPath(newActivity);
+                return findNextPath(source);
             }
 
             Logger.println("No more focus activities, can stop execution");
@@ -499,20 +504,24 @@ public class DiffBasedAgent extends StatefulAgent {
         String source = newState.getActivity();
 
         if (mode == Mode.INITIALIZING) {
+            Logger.format("Mode INITIALIZING, going to find a path to a focus activity from %s", source);
             return findNextPath(source);
         }
 
         String target = reachingPath.get(reachingPath.size() - 1);
 
         if (target.equals(source)) {
+            Logger.format("Reached target activity %s, moving to mode EXPLORING", target);
             mode = Mode.EXPLORING;
         }
 
         if (mode == Mode.REACHING) {
+            Logger.format("Mode REACHING, trying to reach target activity %s from source activity %s", target, source);
             return reachingModeAction(source, target);
         }
 
         if (mode == Mode.EXPLORING) {
+            Logger.format("Mode EXPLORING, exhausting actions of activity %s", source);
             return exploringModeAction(source);
         }
 
