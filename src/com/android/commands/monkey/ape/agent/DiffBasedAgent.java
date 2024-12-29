@@ -29,6 +29,7 @@ import javax.xml.xpath.XPathExpressionException;
 
 import org.json.JSONException;
 import org.json.JSONObject;
+import org.w3c.dom.Node;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
 import org.w3c.dom.NodeList;
@@ -42,6 +43,7 @@ import android.content.ComponentName;
 public class DiffBasedAgent extends StatefulAgent {
 
     private String logFile;
+    private String namespace;
 
     private Set<String> focusActivities = new HashSet<>();
     private Set<String> allActivities = new HashSet<>();
@@ -89,6 +91,7 @@ public class DiffBasedAgent extends StatefulAgent {
             try {
                 Document manifest = parseManifest(manifestFile);
                 this.allActivities = getActivities(manifest);
+                this.namespace = getNamespace(manifest);
             } catch (Exception e) {
                 e.printStackTrace();
                 throw new StopTestingException("Unable to parse manifest XML file");
@@ -294,6 +297,21 @@ public class DiffBasedAgent extends StatefulAgent {
         return builder.parse(manifest);
     }
 
+    private static String getNamespace(Document manifest) throws ParserConfigurationException, IOException, SAXException, XPathExpressionException {
+
+        XPath xPath = XPathFactory.newInstance().newXPath();
+        Node node = (Node) xPath.compile("//application").evaluate(manifest, XPathConstants.NODE);
+        Node namespaceNode = node.getAttributes().getNamedItem("android:name");
+        if (namespaceNode != null) {
+            String namespace = namespaceNode.getNodeValue();
+            namespace = namespace.replace('.', '/').replace('"', ' ').trim();
+            return namespace.substring(0, namespace.lastIndexOf('/'));
+        }
+        else {
+            return "";
+        }
+    }
+
 
     private static Set<String> getActivities(Document manifest) throws ParserConfigurationException, IOException, SAXException, XPathExpressionException {
 
@@ -385,7 +403,7 @@ public class DiffBasedAgent extends StatefulAgent {
                     ModelAction action = newState.getAction(name, actionFromLog.actionType);
                     Logger.format("Found action=%s", action);
 
-                    if (action != null && !newState.targetedActions().contains(action) && action.isVisited())
+                    if (action != null && !action.isVisited()) {
                         return action;
                     }
                 }
@@ -503,11 +521,21 @@ public class DiffBasedAgent extends StatefulAgent {
         return null;
     }
 
+    private static String getNamespace(String activity) {
+        return activity.substring(0, activity.lastIndexOf(".") - 1);
+    }
+
 
     @Override
     protected Action selectNewActionNonnull() {
 
         String source = newState.getActivity();
+
+        // For example in cases like LeakLauncherActivity
+        if (!getNamespace(source).equals(namespace)) {
+            Logger.format("Activity %s outside the namespace, trying to get out", source);
+            return selectNewActionRandomly();
+        }
 
         if (mode == Mode.INITIALIZING) {
             Logger.format("Mode INITIALIZING, going to find a path to a focus activity from %s", source);
