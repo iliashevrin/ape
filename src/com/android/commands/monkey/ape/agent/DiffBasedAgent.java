@@ -304,8 +304,7 @@ public class DiffBasedAgent extends StatefulAgent {
         Node namespaceNode = node.getAttributes().getNamedItem("android:name");
         if (namespaceNode != null) {
             String namespace = namespaceNode.getNodeValue();
-            namespace = namespace.replace('.', '/').replace('"', ' ').trim();
-            return namespace.substring(0, namespace.lastIndexOf('/'));
+            return namespace.substring(0, namespace.lastIndexOf('.')-1);
         }
         else {
             return "";
@@ -378,6 +377,7 @@ public class DiffBasedAgent extends StatefulAgent {
 
         // Should never happen
         if (!reachingPath.contains(source)) {
+            Logger.format("Reaching path does not contain source %s", source);
             return null;
         }
 
@@ -387,6 +387,7 @@ public class DiffBasedAgent extends StatefulAgent {
 
         // Should never happen
         if (possibleActions == null) {
+            Logger.format("No action to take from %s to get to %s", source, next);
             return null;
         }
 
@@ -414,6 +415,7 @@ public class DiffBasedAgent extends StatefulAgent {
             }
         }
 
+        Logger.format("None of the possible actions from %s to %s are valid", source, next);
         return null;
     }
 
@@ -481,7 +483,22 @@ public class DiffBasedAgent extends StatefulAgent {
 
         // If not in focus, go back
         if (!focusActivities.contains(source)) {
-            return newState.getBackAction();
+
+            if (currentState != null) {
+                Logger.format("Trying to go back from activity %s to activity %s", source, currentState.getActivity());
+                for (StateTransition st : getGraph().getInStateTransitions(newState)) {
+                    if (st.getTarget().equals(currentState.getActivity())) {
+                        return st.getAction();
+                    }
+                }
+
+                return newState.getBackAction();
+            }
+
+            // If current state is null it is probably the LeakLauncherActivity
+            mode = Mode.INITIALIZING;
+            return getStartAction(nextRestartAction());
+
         } else {
 
             exploringStates.add(newState);
@@ -532,7 +549,7 @@ public class DiffBasedAgent extends StatefulAgent {
         String source = newState.getActivity();
 
         // For example in cases like LeakLauncherActivity
-        if (!getNamespace(source).equals(namespace)) {
+        if (!getNamespace(source).startsWith(namespace)) {
             Logger.format("Activity %s outside the namespace, trying to get out", source);
             return selectNewActionRandomly();
         }
@@ -544,14 +561,14 @@ public class DiffBasedAgent extends StatefulAgent {
 
         String target = reachingPath.get(reachingPath.size() - 1);
 
-        if (target.equals(source)) {
-            Logger.format("Reached target activity %s, moving to mode EXPLORING", target);
-            mode = Mode.EXPLORING;
-        }
-
-        if (focusActivities.contains(source)) {
-            Logger.format("Reached focus activity %s (but not target %s), moving to mode EXPLORING", source, target);
-            mode = Mode.EXPLORING;
+        if (mode != Mode.EXPLORING) {
+            if (target.equals(source)) {
+                Logger.format("Reached target activity %s, moving to mode EXPLORING", target);
+                mode = Mode.EXPLORING;
+            } else if (focusActivities.contains(source)) {
+                Logger.format("Reached focus activity %s (but not target %s), moving to mode EXPLORING", source, target);
+                mode = Mode.EXPLORING;
+            }
         }
 
         if (mode == Mode.REACHING) {
@@ -570,7 +587,7 @@ public class DiffBasedAgent extends StatefulAgent {
         }
 
         if (mode == Mode.EXPLORING) {
-            Logger.format("Mode EXPLORING, exhausting actions of activity %s", source);
+            Logger.format("Mode EXPLORING, now in activity %s", source);
             return exploringModeAction(source);
         }
 
