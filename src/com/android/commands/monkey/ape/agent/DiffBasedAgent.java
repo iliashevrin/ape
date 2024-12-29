@@ -352,13 +352,18 @@ public class DiffBasedAgent extends StatefulAgent {
         return null;
     }
 
+    private String getExpectedNext(String source) {
+        return reachingPath.get(reachingPath.indexOf(source) + 1);
+    }
+
     private ModelAction getActionFromPath(String source) {
 
+        // Should never happen
         if (!reachingPath.contains(source)) {
             return null;
         }
 
-        String next = reachingPath.get(reachingPath.indexOf(source) + 1);
+        String next = getExpectedNext(source);
 
         Set<ActionFromLog> possibleActions = graph.get(source).get(next);
 
@@ -379,7 +384,8 @@ public class DiffBasedAgent extends StatefulAgent {
                 if (name != null) {
                     ModelAction action = newState.getAction(name, actionFromLog.actionType);
                     Logger.format("Found action=%s", action);
-                    if (action != null) {
+
+                    if (action != null && !newState.targetedActions().contains(action) && action.isVisited())
                         return action;
                     }
                 }
@@ -441,7 +447,7 @@ public class DiffBasedAgent extends StatefulAgent {
         if (currentState != null) {
             String previous = currentState.getActivity();
 
-            // Update as new edgess only activities from focus set or new
+            // Update as new edges only activities from focus set or new
             if (focusActivities.contains(previous)) {
 
                 if (!newEdges.containsKey(previous)) {
@@ -515,7 +521,22 @@ public class DiffBasedAgent extends StatefulAgent {
             mode = Mode.EXPLORING;
         }
 
+        if (focusActivities.contains(source)) {
+            Logger.format("Reached focus activity %s (but not target %s), moving to mode EXPLORING", source, target);
+            mode = Mode.EXPLORING;
+        }
+
         if (mode == Mode.REACHING) {
+
+            String expectedNext = getExpectedNext(currentState.getActivity());
+
+            // Mistakenly moved to an unexpected activity, then go back
+            if (!expectedNext.equals(source) && !expectedNext.equals(currentState.getActivity())) {
+                Logger.format("Mode REACHING, strayed from target %s and now in %s", expectedNext, source);
+
+                return newState.getBackAction();
+            }
+
             Logger.format("Mode REACHING, trying to reach target activity %s from source activity %s", target, source);
             return reachingModeAction(source, target);
         }
