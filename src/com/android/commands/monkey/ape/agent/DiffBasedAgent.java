@@ -42,10 +42,105 @@ import android.content.ComponentName;
 
 public class DiffBasedAgent extends StatefulAgent {
 
+
+
+    public static class FocusTransition {
+        String source;
+        String target;
+        @Override
+        public String toString() {
+            return source + " -> " + target;
+        }
+        @Override
+        public int hashCode() {
+            return Objects.hash(source, target);
+        }
+        @Override
+        public boolean equals(Object obj) {
+            if (this == obj)
+                return true;
+            if (obj == null)
+                return false;
+            if (getClass() != obj.getClass())
+                return false;
+            FocusTransition other = (FocusTransition) obj;
+            return Objects.equals(source, other.source) && Objects.equals(target, other.target);
+        }
+    }
+
+
+    public static class LogActivity {
+        @Override
+        public String toString() {
+            return "[" + activity + ", " + id + "]";
+        }
+        @Override
+        public int hashCode() {
+            return Objects.hash(activity, id);
+        }
+        @Override
+        public boolean equals(Object obj) {
+            if (this == obj)
+                return true;
+            if (obj == null)
+                return false;
+            if (getClass() != obj.getClass())
+                return false;
+            ActivityFromLog other = (ActivityFromLog) obj;
+            return Objects.equals(activity, other.activity) && Objects.equals(id, other.id);
+        }
+        String activity;
+        String id;
+
+
+    }
+
+
+    public static class LogAction {
+        ActionType actionType;
+        String targetXpath;
+
+        LogAction(ActionType actionType, String xpath) {
+            this.actionType = actionType;
+            this.targetXpath = xpath;
+        }
+
+        @Override
+        public String toString() {
+            return "[" + actionType + ", " + targetXpath + "]";
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(actionType, targetXpath);
+        }
+        @Override
+        public boolean equals(Object obj) {
+            if (this == obj)
+                return true;
+            if (obj == null)
+                return false;
+            if (getClass() != obj.getClass())
+                return false;
+            Action other = (Action) obj;
+            return Objects.equals(actionType, other.actionType) && Objects.equals(targetXpath, other.targetXpath);
+        }
+    }
+
+
+    public static enum Mode {
+        INITIALIZING, REACHING, EXPLORING;
+    }
+
+
+
+
     private String logFile;
     private String namespace;
 
-    private Set<String> focusActivities = new HashSet<>();
+    private Set<FocusTransition> existingFocusTransitions = new HashSet<>();
+    private Set<FocusTransition> newFocusTransitions = new HashSet<>();
+
     private Set<String> allActivities = new HashSet<>();
     private Set<String> erroneousActivities = new HashSet<>();
     private Set<State> exploringStates = new HashSet<>();
@@ -54,39 +149,32 @@ public class DiffBasedAgent extends StatefulAgent {
 
     private List<String> reachingPath = new ArrayList<>();
 
-    private Map<String, Map<String, Set<ActionFromLog>>> newEdges = new HashMap<>();
-
     // Activity -> Activity -> Set of Actions
-    private Map<String, Map<String, Set<ActionFromLog>>> graph = new HashMap<>();
-
-    public static class ActionFromLog {
-        ActionType actionType;
-        String targetXpath;
-
-        ActionFromLog(ActionType actionType, String xpath) {
-            this.actionType = actionType;
-            this.targetXpath = xpath;
-        }
-    }
+    private Map<LogActivity, Map<String, Set<LogAction>>> graph = new HashMap<>();
 
 
-    public static enum Mode {
 
-        INITIALIZING,
-        REACHING,
-        EXPLORING;
-    }
 
     public DiffBasedAgent(MonkeySourceApe ape, Graph graph, String previousLog, String manifestFile, String focusSet) {
         super(ape, graph);
         this.logFile = previousLog;
 
-        parseFocusSet(focusSet);
+        Set<FocusTransition> transitions = parseFocusTransitions(focusSet);
 
-        if (focusActivities.isEmpty()) {
+
+        if (transitions.isEmpty()) {
             Logger.println("No focus activities, can stop execution");
         } else {
+
             buildATGFromLog(previousLog);
+
+            for (FocusTransition ft : transitions) {
+                if (isExistingTrans(ft)) {
+                    existingFocusTransitions.add(ft);
+                } else {
+                    newFocusTransitions.add(ft);
+                }
+            }
 
             try {
                 Document manifest = parseManifest(manifestFile);
@@ -100,8 +188,29 @@ public class DiffBasedAgent extends StatefulAgent {
 
     }
 
-    private void parseFocusSet(String focusSet) {
-        this.focusActivities = new HashSet<>(Arrays.asList(focusSet.split(",")));
+    private static Set<FocusTransition> parseFocusTransitions(String focusSet) {
+        Set<FocusTransition> transitions = new HashSet<>();
+        for (String transitionString : focusSet.split(",")) {
+            String[] split = transitionString.split("->");
+            FocusTransition t = new FocusTransition();
+            t.source = split[0];
+            t.target = split[1];
+            transitions.add(t);
+        }
+        return transitions;
+    }
+
+    private static boolean isExistingTrans(FocusTransition ft) {
+        for (LogActivity source : graph.keySet()) {
+            if (source.activity.equals(ft.source)) {
+                for (LogActivity target : graph.get(source).keySet()) {
+                    if (target.activity.equals(ft.target)) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
     }
 
 
@@ -120,10 +229,10 @@ public class DiffBasedAgent extends StatefulAgent {
                     while (!line.contains("Source: ")) {
                         line = readLine(reader);
                     }
-                    String source = parseActivity(line);
+                    LogActivity source = parseActivity(line);
 
-                    if (source.endsWith("Activity") && !graph.containsKey(source)) {
-                        graph.put(source, new HashMap<String, Set<ActionFromLog>>());
+                    if (source.activity.endsWith("Activity") && !graph.containsKey(source)) {
+                        graph.put(source, new HashMap<String, Set<LogAction>>());
                     }
 
                     while (!line.contains("Action: ")) {
@@ -135,19 +244,19 @@ public class DiffBasedAgent extends StatefulAgent {
                     while (!line.contains("Target: ")) {
                         line = readLine(reader);
                     }
-                    String target = parseActivity(line);
+                    LogActivity target = parseActivity(line);
 
 
                     // Also add target as node in graph
-                    if (target.endsWith("Activity") && !graph.containsKey(target)) {
-                        graph.put(target, new HashMap<String, Set<ActionFromLog>>());
+                    if (target.activity.endsWith("Activity") && !graph.containsKey(target)) {
+                        graph.put(target, new HashMap<LogActivity, Set<LogAction>>());
                     }
 
                     if (!graph.get(source).containsKey(target)) {
-                        graph.get(source).put(target, new HashSet<ActionFromLog>());
+                        graph.get(source).put(target, new HashSet<LogAction>());
                     }
 
-                    graph.get(source).get(target).add(new ActionFromLog(actionType, xpath));
+                    graph.get(source).get(target).add(new LogAction(actionType, xpath));
                 }
 
                 line = readLine(reader);
@@ -267,9 +376,12 @@ public class DiffBasedAgent extends StatefulAgent {
         return sb.toString();
     }
 
-    private static String parseActivity(String line) {
-        String temp = line.split("@")[0];
-        return temp.substring(temp.lastIndexOf("]") + 1);
+    private static LogActivity parseActivity(String line) {
+        String temp = line.split("@")[0].substring(5);
+        LogActivity afl = new LogActivity();
+        afl.activity = temp.substring(temp.lastIndexOf("]") + 1);
+        afl.id = temp.substring(temp.indexOf(": ") + 2, temp.indexOf("["));
+        return afl;
     }
 
     private static ActionType parseActionType(String line) {
@@ -338,17 +450,17 @@ public class DiffBasedAgent extends StatefulAgent {
 
 
     // Finds next path to nearest activity in focus set that was not yet traversed
-    private List<String> nextPath(String source) {
+    private List<String> nextPath(LogActivity source) {
 
-        Queue<List<String>> q = new LinkedList<>();
-        Set<String> visited = new HashSet<>();
+        Queue<List<LogActivity>> q = new LinkedList<>();
+        Set<LogActivity> visited = new HashSet<>();
 //        q.add(Collections.singletonList(getMain()));
         q.add(Collections.singletonList(source));
 
         while (!q.isEmpty()) {
 
-            List<String> curr = q.poll();
-            String lastActivity = curr.get(curr.size()-1);
+            List<LogActivity> curr = q.poll();
+            LogActivity lastActivity = curr.get(curr.size()-1);
             visited.add(lastActivity);
 
             // Find a path towards a focus activity that is not erroneous
@@ -359,7 +471,7 @@ public class DiffBasedAgent extends StatefulAgent {
 
             for (String next : graph.get(lastActivity).keySet()) {
                 if (!visited.contains(next)) {
-                    List<String> newPath = new ArrayList<>(curr);
+                    List<LogActivity> newPath = new ArrayList<>(curr);
                     newPath.add(next);
                     q.add(newPath);
                 }
@@ -383,7 +495,7 @@ public class DiffBasedAgent extends StatefulAgent {
 
         String next = getExpectedNext(source);
 
-        Set<ActionFromLog> possibleActions = graph.get(source).get(next);
+        Set<LogAction> possibleActions = graph.get(source).get(next);
 
         // Should never happen
         if (possibleActions == null) {
@@ -394,14 +506,14 @@ public class DiffBasedAgent extends StatefulAgent {
         Logger.format("Source=%s; Next=%s; #actions=%d",
                 source, next, possibleActions.size());
 
-        for (ActionFromLog actionFromLog : possibleActions) {
+        for (LogAction logAction : possibleActions) {
             try {
                 Logger.format("Source=%s; Next=%s; Action=%s; Xpath=%s",
-                        source, next, actionFromLog.actionType, actionFromLog.targetXpath);
-                Name name = resolveName(actionFromLog.targetXpath);
+                        source, next, logAction.actionType, logAction.targetXpath);
+                Name name = resolveName(logAction.targetXpath);
 
                 if (name != null) {
-                    ModelAction action = newState.getAction(name, actionFromLog.actionType);
+                    ModelAction action = newState.getAction(name, logAction.actionType);
                     Logger.format("Found action=%s", action);
 
                     if (action != null && !action.isVisited()) {
@@ -471,13 +583,13 @@ public class DiffBasedAgent extends StatefulAgent {
             if (focusActivities.contains(previous)) {
 
                 if (!newEdges.containsKey(previous)) {
-                    newEdges.put(previous, new HashMap<String, Set<ActionFromLog>>());
+                    newEdges.put(previous, new HashMap<String, Set<LogAction>>());
                 }
                 if (!newEdges.get(previous).containsKey(source)) {
-                    newEdges.get(previous).put(source, new HashSet<ActionFromLog>());
+                    newEdges.get(previous).put(source, new HashSet<LogAction>());
                 }
                 String xpath = parseTargetXpath(currentAction.toString());
-                newEdges.get(previous).get(source).add(new ActionFromLog(currentAction.getType(), xpath));
+                newEdges.get(previous).get(source).add(new LogAction(currentAction.getType(), xpath));
             }
         }
 
