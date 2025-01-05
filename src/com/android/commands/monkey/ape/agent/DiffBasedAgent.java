@@ -145,12 +145,14 @@ public class DiffBasedAgent extends StatefulAgent {
     private Set<String> erroneousActivities = new HashSet<>();
     private Set<State> exploringStates = new HashSet<>();
 
+    private Map<FocusTransition, List<Activity>> visitedActivities = new HashMap<>();
+
     private Mode mode = Mode.INITIALIZING;
 
-    private List<String> reachingPath = new ArrayList<>();
+    private List<List<LogAction>> reachingPath = new ArrayList<>();
 
     // Activity -> Activity -> Set of Actions
-    private Map<LogActivity, Map<String, Set<LogAction>>> graph = new HashMap<>();
+    private Map<LogActivity, Map<LogActivity, Set<LogAction>>> graph = new HashMap<>();
 
 
 
@@ -317,6 +319,18 @@ public class DiffBasedAgent extends StatefulAgent {
         return null;
     }
 
+    private List<String> getTargetActivities() {
+        Set<String> targetActivities = new HashSet<>();
+
+        for (FocusTransition transition : existingFocusTransitions) {
+            targetActivities.add(transition.source);
+        }
+        for (FocusTransition transition : newFocusTransitions) {
+            targetActivities.add(transition.source);
+        }
+        return targetActivities;
+    }
+
 
 
 
@@ -449,8 +463,20 @@ public class DiffBasedAgent extends StatefulAgent {
     }
 
 
+    private List<List<LogAction>> actionsFromPath(List<LogActivity> path) {
+
+        List<List<LogAction>> actions = new ArrayList<>();
+
+        for (int i = 0; i < path.size()-1; i++) {
+            actions.add(new ArrayList<>(graph.get(path.get(i)).get(path.get(i+1))));
+        }
+
+        return actions;
+    }
+
+
     // Finds next path to nearest activity in focus set that was not yet traversed
-    private List<String> nextPath(LogActivity source) {
+    private List<List<LogAction>> nextPath(LogActivity source) {
 
         Queue<List<LogActivity>> q = new LinkedList<>();
         Set<LogActivity> visited = new HashSet<>();
@@ -464,12 +490,12 @@ public class DiffBasedAgent extends StatefulAgent {
             visited.add(lastActivity);
 
             // Find a path towards a focus activity that is not erroneous
-            if (focusActivities.contains(lastActivity) && !erroneousActivities.contains(lastActivity)) {
+            if (getTargetActivities().contains(lastActivity.activity)) {
                 Logger.format("New activity to reach is %s", lastActivity);
-                return curr;
+                return actionsFromPath(curr);
             }
 
-            for (String next : graph.get(lastActivity).keySet()) {
+            for (LogActivity next : graph.get(lastActivity).keySet()) {
                 if (!visited.contains(next)) {
                     List<LogActivity> newPath = new ArrayList<>(curr);
                     newPath.add(next);
