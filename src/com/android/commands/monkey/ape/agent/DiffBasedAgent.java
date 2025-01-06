@@ -139,6 +139,7 @@ public class DiffBasedAgent extends StatefulAgent {
     private Set<String> allActivities = new HashSet<>();
     private Set<State> exploringStates = new HashSet<>();
 
+    private FocusTransition currentTransitionToCheck = null;
     private Map<FocusTransition, List<Activity>> visitedActivities = new HashMap<>();
     private Map<FocusTransition, Set<LogAction>> existingTransitions = new HashMap<>();
     private Map<FocusTransition, Set<LogAction>> newTransitions = new HashMap<>();
@@ -347,22 +348,6 @@ public class DiffBasedAgent extends StatefulAgent {
         return null;
     }
 
-    private static Set<LogActivity> getActivitiesToReach() {
-        Set<LogActivity> toReach = new HashSet<>();
-
-        for (FocusTransition transition : existingTransitions.keySet()) {
-            for (LogAction action : existingTransitions.get(transition)) {
-                toReach.add(action.source);
-            }
-        }
-        for (FocusTransition transition : newTransitions.keySet()) {
-            for (LogAction action : newTransitions.get(transition)) {
-                toReach.add(action.source);
-            }
-        }
-        return toReach;
-    }
-
 
 
 
@@ -551,10 +536,6 @@ public class DiffBasedAgent extends StatefulAgent {
         return null;
     }
 
-    private String getExpectedNext(String source) {
-        return reachingPath.get(reachingPath.indexOf(source) + 1);
-    }
-
     private ModelAction getActionFromPath(String source) {
 
         // Should never happen
@@ -604,6 +585,22 @@ public class DiffBasedAgent extends StatefulAgent {
         return null;
     }
 
+    private Set<LogActivity> getActivitiesToReach() {
+        Set<LogActivity> toReach = new HashSet<>();
+
+        for (FocusTransition transition : existingTransitions.keySet()) {
+            for (LogAction action : existingTransitions.get(transition)) {
+                toReach.add(action.source);
+            }
+        }
+        for (FocusTransition transition : newTransitions.keySet()) {
+            for (LogAction action : newTransitions.get(transition)) {
+                toReach.add(action.source);
+            }
+        }
+        return toReach;
+    }
+
     private Action reachingModeAction(String source, String target) {
 
         ModelAction action = getActionFromPath(source);
@@ -649,102 +646,161 @@ public class DiffBasedAgent extends StatefulAgent {
         return getStartAction(nextRestartAction());
     }
 
-    private FocusTransition nextToCheck(String source) {
-
-        for (FocusTransition transition : existingTransitions.keySet()) {
-            if (transition.source.equals(source)) {
-                return transition;
-            }
-        }
-        for (FocusTransition transition : newTransitions.keySet()) {
-            if (transition.source.equals(source)) {
-                return transition;
-            }
-        }
-        return null;
-    }
 
     private Action exploringModeAction(String source) {
 
-        FocusTransition toCheck = nextToCheck(source);
+        if (currentTransitionToCheck != null) {
+
+            Logger.format("Current transition to check is %s", currentTransitionToCheck);
+
+            // Found a transition, there is an edge in the ATG
+            if (source.equals(currentTransitionToCheck.target)) {
+
+                Logger.format("Transition found between %s and %s!", currentTransitionToCheck.source, currentTransitionToCheck.target);
+
+                if (existingTransitions.containsKey(currentTransitionToCheck)) {
+                    existingTransitions.remove(currentTransitionToCheck);
+                }
+                if (newTransitions.containsKey(currentTransitionToCheck)) {
+                    newTransitions.remove(currentTransitionToCheck);
+                }
+            }
+
+            Logger.format("Target differs from transition target, moving to next transition");
+
+            // Choose a new focus action and start again
+            if (!getActivitiesToReach.isEmpty()) {
+                return findNextPath(source);
+            } else {
+                return null; // Finished?
+            }
+        }
+
+        // Assign new transition to check
+        // First check existing transitions
+        for (FocusTransition transition : existingTransitions.keySet()) {
+            if (transition.source.equals(source)) {
+                this.currentTransitionToCheck = transition;
+
+                for (ModelAction modelAction : newState.targetedActions()) {
+                    for (LogAction logAction : existingTransitions.get(transition)) {
+                        if (!modelAction.isVisited() &&
+                                logAction.targetXpath.equals(modelAction.getTarget()) &&
+                                logAction.actionType.equals(modelAction.getType().toString())) {
+
+                            return modelAction;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Next check new transitions
+        for (FocusTransition transition : newTransitions.keySet()) {
+            if (transition.source.equals(source)) {
+                this.currentTransitionToCheck = transition;
+
+                for (ModelAction modelAction : newState.targetedActions()) {
+
+                    boolean found = false;
+                    for (LogAction logAction : newTransitions.get(transition)) {
+                        if (logAction.targetXpath.equals(modelAction.getTarget()) &&
+                                logAction.actionType.equals(modelAction.getType().toString())) {
+
+                            found = true;
+                            break;
+                        }
+                    }
+
+                    if (!found && !modelAction.isVisited()) {
+                        return modelAction;
+                    }
+                }
+            }
+        }
+
+        Logger.format("Current source %s does not match any transition, restarting", source);
+        mode = Mode.INITIALIZING;
+
+        return getStartAction(nextRestartAction());
 
         // If spotted an activity not existing in previous version, add it to focus
 //        if (!allActivities.contains(source)) {
 //            focusActivities.add(source);
 //        }
 
-        if (currentState != null) {
-            String previous = currentState.getActivity();
-
-            // Update as new edges only activities from focus set or new
-            if (focusActivities.contains(previous)) {
-
-                if (!newEdges.containsKey(previous)) {
-                    newEdges.put(previous, new HashMap<String, Set<LogAction>>());
-                }
-                if (!newEdges.get(previous).containsKey(source)) {
-                    newEdges.get(previous).put(source, new HashSet<LogAction>());
-                }
-                String xpath = parseTargetXpath(currentAction.toString());
-                newEdges.get(previous).get(source).add(new LogAction(currentAction.getType(), xpath));
-            }
-        }
-
-        // If not in focus, go back
-        if (!focusActivities.contains(source)) {
-
-            if (currentState != null) {
-                Logger.format("Trying to go back from activity %s to activity %s", source, currentState.getActivity());
-                for (StateTransition st : getGraph().getInStateTransitions(newState)) {
-                    if (st.getTarget().equals(currentState.getActivity())) {
-                        return st.getAction();
-                    }
-                }
-
-                return newState.getBackAction();
-            }
-
-            // If current state is null it is probably the LeakLauncherActivity
-            mode = Mode.INITIALIZING;
-            return getStartAction(nextRestartAction());
-
-        } else {
-
-            exploringStates.add(newState);
-
-            Logger.format("Exploring activity %s, total actions to explore %d", source, newState.targetedActions().size());
-
-            for (ModelAction action : newState.targetedActions()) {
-                if (!action.isVisited()) {
-                    return action;
-                }
-            }
-            // If exhausted the activity, remove from focusActivities set and update graph
-            focusActivities.remove(source);
-            exploringStates.remove(newState);
-
-            graph.put(source, newEdges.get(source));
-
-            // Check if can return to another focus activity that is currently being explored through visited actions
-            for (State state : exploringStates) {
-                for (StateTransition st : getGraph().getInStateTransitions(newState)) {
-                    if (st.getTarget().equals(state) && !state.getActivity().equals(source)) {
-                        return st.getAction();
-                    }
-                }
-            }
-
-            // Choose a new focus action and start again
-            // Should clear exploringStates?
-            if (!focusActivities.isEmpty()) {
-                return findNextPath(source);
-            }
-
-            Logger.println("No more focus activities, can stop execution");
-        }
+//        if (currentState != null) {
+//            String previous = currentState.getActivity();
+//
+//            // Update as new edges only activities from focus set or new
+//            if (focusActivities.contains(previous)) {
+//
+//                if (!newEdges.containsKey(previous)) {
+//                    newEdges.put(previous, new HashMap<String, Set<LogAction>>());
+//                }
+//                if (!newEdges.get(previous).containsKey(source)) {
+//                    newEdges.get(previous).put(source, new HashSet<LogAction>());
+//                }
+//                String xpath = parseTargetXpath(currentAction.toString());
+//                newEdges.get(previous).get(source).add(new LogAction(currentAction.getType(), xpath));
+//            }
+//        }
+//
+//        // If not in focus, go back
+//        if (!focusActivities.contains(source)) {
+//
+//            if (currentState != null) {
+//                Logger.format("Trying to go back from activity %s to activity %s", source, currentState.getActivity());
+//                for (StateTransition st : getGraph().getInStateTransitions(newState)) {
+//                    if (st.getTarget().equals(currentState.getActivity())) {
+//                        return st.getAction();
+//                    }
+//                }
+//
+//                return newState.getBackAction();
+//            }
+//
+//            // If current state is null it is probably the LeakLauncherActivity
+//            mode = Mode.INITIALIZING;
+//            return getStartAction(nextRestartAction());
+//
+//        } else {
+//
+//            exploringStates.add(newState);
+//
+//            Logger.format("Exploring activity %s, total actions to explore %d", source, newState.targetedActions().size());
+//
+//            for (ModelAction action : newState.targetedActions()) {
+//                if (!action.isVisited()) {
+//                    return action;
+//                }
+//            }
+//            // If exhausted the activity, remove from focusActivities set and update graph
+//            focusActivities.remove(source);
+//            exploringStates.remove(newState);
+//
+//            graph.put(source, newEdges.get(source));
+//
+//            // Check if can return to another focus activity that is currently being explored through visited actions
+//            for (State state : exploringStates) {
+//                for (StateTransition st : getGraph().getInStateTransitions(newState)) {
+//                    if (st.getTarget().equals(state) && !state.getActivity().equals(source)) {
+//                        return st.getAction();
+//                    }
+//                }
+//            }
+//
+//            // Choose a new focus action and start again
+//            // Should clear exploringStates?
+//            if (!focusActivities.isEmpty()) {
+//                return findNextPath(source);
+//            }
+//
+//            Logger.println("No more focus activities, can stop execution");
+//        }
 
         // Finished all activities
-        return null;
+//        return null;
     }
 
     private static String getNamespace(String activity) {
