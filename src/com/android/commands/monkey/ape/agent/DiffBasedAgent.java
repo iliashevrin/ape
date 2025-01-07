@@ -86,7 +86,7 @@ public class DiffBasedAgent extends StatefulAgent {
                 return false;
             if (getClass() != obj.getClass())
                 return false;
-            ActivityFromLog other = (ActivityFromLog) obj;
+            LogActivity other = (LogActivity) obj;
             return Objects.equals(activity, other.activity) && Objects.equals(id, other.id);
         }
         String activity;
@@ -101,7 +101,7 @@ public class DiffBasedAgent extends StatefulAgent {
         public String toString() {
             return "[" + source + " -> " + target + ", " + actionType + ", " + targetXpath + "]";
         }
-        String actionType;
+        ActionType actionType;
         String targetXpath;
         LogActivity source;
         LogActivity target;
@@ -140,7 +140,6 @@ public class DiffBasedAgent extends StatefulAgent {
     private Set<State> exploringStates = new HashSet<>();
 
     private FocusTransition currentTransitionToCheck = null;
-    private Map<FocusTransition, List<Activity>> visitedActivities = new HashMap<>();
     private Map<FocusTransition, Set<LogAction>> existingTransitions = new HashMap<>();
     private Map<FocusTransition, Set<LogAction>> newTransitions = new HashMap<>();
 
@@ -260,7 +259,7 @@ public class DiffBasedAgent extends StatefulAgent {
                     LogActivity source = parseActivity(line);
 
                     if (source.activity.endsWith("Activity") && !graph.containsKey(source)) {
-                        graph.put(source, new HashMap<String, Set<LogAction>>());
+                        graph.put(source, new HashMap<LogActivity, Set<LogAction>>());
                     }
 
                     while (!line.contains("Action: ")) {
@@ -279,13 +278,16 @@ public class DiffBasedAgent extends StatefulAgent {
                     if (target.activity.endsWith("Activity") && !graph.containsKey(target)) {
                         graph.put(target, new HashMap<LogActivity, Set<LogAction>>());
                     }
-                    if (action.targetXpath != null) {
-                        action.source = source;
-                        action.target = target;
+                    if (actionType != null) {
+                        LogAction logAction = new LogAction();
+                        logAction.actionType = actionType;
+                        logAction.targetXpath = xpath;
+                        logAction.source = source;
+                        logAction.target = target;
                         if (!graph.get(source).containsKey(target)) {
                             graph.get(source).put(target, new HashSet<LogAction>());
                         }
-                        graph.get(source).get(target).add(new LogAction(actionType, xpath));
+                        graph.get(source).get(target).add(logAction);
                     }
 
                 }
@@ -473,15 +475,15 @@ public class DiffBasedAgent extends StatefulAgent {
 
 
 
-    private String getMain() {
-        for (String activity : graph.keySet()) {
-            if (activity.contains("MainActivity")) {
-                return activity;
-            }
-        }
-
-        return null;
-    }
+//    private String getMain() {
+//        for (String activity : graph.keySet()) {
+//            if (activity.contains("MainActivity")) {
+//                return activity;
+//            }
+//        }
+//
+//        return null;
+//    }
 
 
     private List<Set<LogAction>> actionsFromPath(List<LogActivity> path) {
@@ -493,7 +495,7 @@ public class DiffBasedAgent extends StatefulAgent {
         return actions;
     }
 
-    private static List<LogActivity> nameToActivities(String name) {
+    private List<LogActivity> nameToActivities(String name) {
         List<LogActivity> activityObjects = new ArrayList<>();
         for (LogActivity activityObject : graph.keySet()) {
             if (activityObject.activity.equals(name)) {
@@ -539,12 +541,12 @@ public class DiffBasedAgent extends StatefulAgent {
     private ModelAction getActionFromPath(String source) {
 
         // Should never happen
-        if (!reachingPath.contains(source)) {
-            Logger.format("Reaching path does not contain source %s", source);
-            return null;
-        }
+//        if (!reachingPath.contains(source)) {
+//            Logger.format("Reaching path does not contain source %s", source);
+//            return null;
+//        }
 
-        Set<LogAction> possibleActions;
+        Set<LogAction> possibleActions = null;
         for (Set<LogAction> actions : reachingPath) {
             if (new ArrayList<>(actions).get(0).source.activity.equals(source)) {
                 possibleActions = actions;
@@ -552,18 +554,20 @@ public class DiffBasedAgent extends StatefulAgent {
         }
 
         // Should never happen
-//        if (possibleActions == null) {
-//            Logger.format("No action to take from %s to get to %s", source, next);
-//            return null;
-//        }
+        if (possibleActions == null) {
+            Logger.format("No action to take from %s to get to somewhere", source);
+            return null;
+        }
 
-        Logger.format("Source=%s; Next=%s; #actions=%d",
-                source, next, possibleActions.size());
+        String target = new ArrayList<>(possibleActions).get(0).target.activity;
+
+        Logger.format("Source=%s; Target=%s; #actions=%d",
+                source, target, possibleActions.size());
 
         for (LogAction logAction : possibleActions) {
             try {
-                Logger.format("Source=%s; Next=%s; Action=%s; Xpath=%s",
-                        source, next, logAction.actionType, logAction.targetXpath);
+                Logger.format("Source=%s; Target=%s; Action=%s; Xpath=%s",
+                        source, target, logAction.actionType, logAction.targetXpath);
                 Name name = resolveName(logAction.targetXpath);
 
                 if (name != null) {
@@ -581,7 +585,7 @@ public class DiffBasedAgent extends StatefulAgent {
             }
         }
 
-        Logger.format("None of the possible actions from %s to %s are valid", source, next);
+        Logger.format("None of the possible actions from %s to %s are valid", source, target);
         return null;
     }
 
@@ -669,7 +673,7 @@ public class DiffBasedAgent extends StatefulAgent {
             Logger.format("Target differs from transition target, moving to next transition");
 
             // Choose a new focus action and start again
-            if (!getActivitiesToReach.isEmpty()) {
+            if (!getActivitiesToReach().isEmpty()) {
                 return findNextPath(source);
             } else {
                 return null; // Finished?
@@ -686,7 +690,7 @@ public class DiffBasedAgent extends StatefulAgent {
                     for (LogAction logAction : existingTransitions.get(transition)) {
                         if (!modelAction.isVisited() &&
                                 logAction.targetXpath.equals(modelAction.getTarget()) &&
-                                logAction.actionType.equals(modelAction.getType().toString())) {
+                                logAction.actionType.equals(modelAction.getType())) {
 
                             return modelAction;
                         }
@@ -705,7 +709,7 @@ public class DiffBasedAgent extends StatefulAgent {
                     boolean found = false;
                     for (LogAction logAction : newTransitions.get(transition)) {
                         if (logAction.targetXpath.equals(modelAction.getTarget()) &&
-                                logAction.actionType.equals(modelAction.getType().toString())) {
+                                logAction.actionType.equals(modelAction.getType())) {
 
                             found = true;
                             break;
@@ -824,7 +828,7 @@ public class DiffBasedAgent extends StatefulAgent {
             return findNextPath(source);
         }
 
-        String target = new ArrayList<>(path.get(path.size()-1)).get(0).target.activity;
+        String target = new ArrayList<>(reachingPath.get(reachingPath.size()-1)).get(0).target.activity;
 
         if (mode != Mode.EXPLORING) {
             if (target.equals(source)) {
