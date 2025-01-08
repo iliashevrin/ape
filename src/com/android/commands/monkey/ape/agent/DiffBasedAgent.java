@@ -43,6 +43,7 @@ import android.content.ComponentName;
 public class DiffBasedAgent extends StatefulAgent {
 
 
+    public static final java.lang.String XPATH_PATTERN = ".*class=([^;]*);(resource-id=([^;]*);)?(.*);";
 
     public static class FocusTransition {
         String source;
@@ -190,13 +191,29 @@ public class DiffBasedAgent extends StatefulAgent {
     private static Set<FocusTransition> parseFocusTransitions(String focusSet) {
         Set<FocusTransition> transitions = new HashSet<>();
         for (String transitionString : focusSet.split(",")) {
-            String[] split = transitionString.split("->");
+            String[] split = transitionString.split("_");
             FocusTransition t = new FocusTransition();
             t.source = split[0];
             t.target = split[1];
             transitions.add(t);
         }
         return transitions;
+    }
+
+    public static String getResourceId(String xpath) {
+        if (xpath == null) {
+            return null;
+        }
+
+        Pattern p = Pattern.compile("^.*resource-id=\\\"(.*)\\\".*$");
+        Matcher m = p.matcher(xpath);
+        if (m.matches()) {
+            if (m.group(1) != null) {
+                return m.group(1);
+            }
+        }
+
+        return xpath;
     }
 
     private Set<LogAction> getExistingActionsToCheck(FocusTransition ft) {
@@ -371,7 +388,7 @@ public class DiffBasedAgent extends StatefulAgent {
 
         temp = temp.substring(0, temp.indexOf("["));
 
-        Pattern p = Pattern.compile(".*class=([^;]*);(resource-id=([^;]*);)?(.*);");
+        Pattern p = Pattern.compile(XPATH_PATTERN);
 
         Matcher m = p.matcher(temp);
 
@@ -495,14 +512,68 @@ public class DiffBasedAgent extends StatefulAgent {
         return actions;
     }
 
-    private List<LogActivity> nameToActivities(String name) {
-        List<LogActivity> activityObjects = new ArrayList<>();
-        for (LogActivity activityObject : graph.keySet()) {
-            if (activityObject.activity.equals(name)) {
-                activityObjects.add(activityObject);
+    private ModelAction modelActionFromLogAction(State state, LogAction action) {
+
+        String resourceId = getResourceId(action.targetXpath);
+        Logger.format(resourceId);
+        Logger.format("all actions");
+        for (ModelAction modelAction : state.targetedActions()) {
+            String modelResourceId = getResourceId(modelAction.getTarget().toXPath());
+            Logger.format(modelResourceId);
+            if (modelAction.getType().equals(action.actionType) && modelResourceId.equals(resourceId)) {
+                return modelAction;
             }
         }
-        return activityObjects;
+
+        return null;
+    }
+
+    private LogActivity stateToActivity() {
+
+        String activityName = newState.getActivity();
+
+        Logger.format("# of target for current state %s is %d", activityName, newState.targetedActions().size());
+
+        List<LogActivity> candidates = new ArrayList<>();
+        List<LogActivity> naiveCandidates = new ArrayList<>();
+
+        // Find best match for log activity object
+        for (LogActivity from : graph.keySet()) {
+
+            if (!from.activity.equals(activityName)) {
+                continue;
+            }
+
+            naiveCandidates.add(from);
+
+            Set<LogAction> actions = new HashSet<>();
+            for (LogActivity to : graph.get(from).keySet()) {
+                actions.addAll(graph.get(from).get(to));
+            }
+
+            Logger.format("checking %s", from);
+
+            boolean invalidAction = false;
+            for (LogAction action : actions) {
+                Logger.format("checking action %s", action.targetXpath);
+
+                if (modelActionFromLogAction(newState, action) == null) {
+                    invalidAction = true;
+                    break;
+                }
+            }
+            if (!invalidAction) {
+                candidates.add(from);
+            }
+        }
+
+        Logger.format("# of candidate activities for %s is %d", activityName, candidates.size());
+        Logger.format("# of naive candidate activities for %s is %d", activityName, naiveCandidates.size());
+
+        if (candidates.isEmpty()) {
+            return naiveCandidates.get(0);
+        }
+        return candidates.get(0);
     }
 
 
@@ -565,24 +636,31 @@ public class DiffBasedAgent extends StatefulAgent {
                 source, target, possibleActions.size());
 
         for (LogAction logAction : possibleActions) {
-            try {
-                Logger.format("Source=%s; Target=%s; Action=%s; Xpath=%s",
-                        source, target, logAction.actionType, logAction.targetXpath);
-                Name name = resolveName(logAction.targetXpath);
+//            try {
 
-                if (name != null) {
-                    ModelAction action = newState.getAction(name, logAction.actionType);
-                    Logger.format("Found action=%s", action);
+            Logger.format("Source=%s; Target=%s; Action=%s; Xpath=%s",
+                    source, target, logAction.actionType, logAction.targetXpath);
 
-                    if (action != null && !action.isVisited()) {
-                        return action;
-                    }
-                }
-
-            } catch (Exception e) {
-                e.printStackTrace();
-                // Check next action
+            ModelAction modelAction = modelActionFromLogAction(newState, logAction);
+            if (modelAction != null && !modelAction.isVisited()) {
+                return modelAction;
             }
+
+//                Name name = resolveName(logAction.targetXpath);
+//
+//                if (name != null) {
+//                    ModelAction action = newState.getAction(name, logAction.actionType);
+//                    Logger.format("Found action=%s", action);
+//
+//                    if (action != null && !action.isVisited()) {
+//                        return action;
+//                    }
+//                }
+
+//            } catch (Exception e) {
+//                e.printStackTrace();
+//                // Check next action
+//            }
         }
 
         Logger.format("None of the possible actions from %s to %s are valid", source, target);
@@ -621,14 +699,16 @@ public class DiffBasedAgent extends StatefulAgent {
 
     private Action findNextPath(String source) {
 
-        List<LogActivity> current = nameToActivities(source);
+        LogActivity current = stateToActivity();
 
-        List<Set<LogAction>> path = null;
-        int i = 0;
-        do {
-            path = nextPath(current.get(i));
-            i++;
-        } while (path == null && i < current.size());
+        List<Set<LogAction>> path = nextPath(current);
+
+//        List<Set<LogAction>> path = null;
+//        int i = 0;
+//        do {
+//            path = nextPath(current.get(i));
+//            i++;
+//        } while (path == null && i < current.size());
 
         if (path != null) {
             mode = Mode.REACHING;
@@ -689,7 +769,7 @@ public class DiffBasedAgent extends StatefulAgent {
                 for (ModelAction modelAction : newState.targetedActions()) {
                     for (LogAction logAction : existingTransitions.get(transition)) {
                         if (!modelAction.isVisited() &&
-                                logAction.targetXpath.equals(modelAction.getTarget()) &&
+                                logAction.targetXpath.equals(modelAction.getTarget().toXPath()) &&
                                 logAction.actionType.equals(modelAction.getType())) {
 
                             return modelAction;
@@ -708,7 +788,7 @@ public class DiffBasedAgent extends StatefulAgent {
 
                     boolean found = false;
                     for (LogAction logAction : newTransitions.get(transition)) {
-                        if (logAction.targetXpath.equals(modelAction.getTarget()) &&
+                        if (logAction.targetXpath.equals(modelAction.getTarget().toXPath()) &&
                                 logAction.actionType.equals(modelAction.getType())) {
 
                             found = true;
