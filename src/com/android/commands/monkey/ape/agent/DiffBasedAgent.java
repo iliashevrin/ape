@@ -515,11 +515,8 @@ public class DiffBasedAgent extends StatefulAgent {
     private ModelAction modelActionFromLogAction(State state, LogAction action) {
 
         String resourceId = getResourceId(action.targetXpath);
-        Logger.format(resourceId);
-        Logger.format("all actions");
         for (ModelAction modelAction : state.targetedActions()) {
             String modelResourceId = getResourceId(modelAction.getTarget().toXPath());
-            Logger.format(modelResourceId);
             if (modelAction.getType().equals(action.actionType) && modelResourceId.equals(resourceId)) {
                 return modelAction;
             }
@@ -537,6 +534,8 @@ public class DiffBasedAgent extends StatefulAgent {
         List<LogActivity> candidates = new ArrayList<>();
         List<LogActivity> naiveCandidates = new ArrayList<>();
 
+        Logger.format("targeted actions are %s", newState.targetedActions());
+
         // Find best match for log activity object
         for (LogActivity from : graph.keySet()) {
 
@@ -551,11 +550,8 @@ public class DiffBasedAgent extends StatefulAgent {
                 actions.addAll(graph.get(from).get(to));
             }
 
-            Logger.format("checking %s", from);
-
             boolean invalidAction = false;
             for (LogAction action : actions) {
-                Logger.format("checking action %s", action.targetXpath);
 
                 if (modelActionFromLogAction(newState, action) == null) {
                     invalidAction = true;
@@ -563,6 +559,8 @@ public class DiffBasedAgent extends StatefulAgent {
                 }
             }
             if (!invalidAction) {
+                Logger.format("candidate is %s", from);
+                Logger.format("candidate actions are %s", actions);
                 candidates.add(from);
             }
         }
@@ -748,9 +746,11 @@ public class DiffBasedAgent extends StatefulAgent {
                 if (newTransitions.containsKey(currentTransitionToCheck)) {
                     newTransitions.remove(currentTransitionToCheck);
                 }
-            }
 
-            Logger.format("Target differs from transition target, moving to next transition");
+                currentTransitionToCheck = null;
+            } else {
+                Logger.format("Target differs from transition target, moving to next transition");
+            }
 
             // Choose a new focus action and start again
             if (!getActivitiesToReach().isEmpty()) {
@@ -766,14 +766,10 @@ public class DiffBasedAgent extends StatefulAgent {
             if (transition.source.equals(source)) {
                 this.currentTransitionToCheck = transition;
 
-                for (ModelAction modelAction : newState.targetedActions()) {
-                    for (LogAction logAction : existingTransitions.get(transition)) {
-                        if (!modelAction.isVisited() &&
-                                logAction.targetXpath.equals(modelAction.getTarget().toXPath()) &&
-                                logAction.actionType.equals(modelAction.getType())) {
-
-                            return modelAction;
-                        }
+                for (LogAction logAction : existingTransitions.get(transition)) {
+                    ModelAction modelAction = modelActionFromLogAction(newState, logAction);
+                    if (modelAction != null && !modelAction.isVisited()) {
+                        return modelAction;
                     }
                 }
             }
@@ -785,10 +781,13 @@ public class DiffBasedAgent extends StatefulAgent {
                 this.currentTransitionToCheck = transition;
 
                 for (ModelAction modelAction : newState.targetedActions()) {
+                    String modelActionResourceId = getResourceId(modelAction.getTarget().toXPath());
 
                     boolean found = false;
                     for (LogAction logAction : newTransitions.get(transition)) {
-                        if (logAction.targetXpath.equals(modelAction.getTarget().toXPath()) &&
+                        String resourceId = getResourceId(logAction.targetXpath);
+
+                        if (modelActionResourceId.equals(resourceId) &&
                                 logAction.actionType.equals(modelAction.getType())) {
 
                             found = true;
