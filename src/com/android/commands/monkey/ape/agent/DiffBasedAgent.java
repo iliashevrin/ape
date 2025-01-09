@@ -146,7 +146,7 @@ public class DiffBasedAgent extends StatefulAgent {
 
     private Mode mode = Mode.INITIALIZING;
 
-    private List<Set<LogAction>> reachingPath = new ArrayList<>();
+    private List<LogActivity> logActivityPath = new ArrayList<>();
 
     // Activity -> Activity -> Set of Actions
     private Map<LogActivity, Map<LogActivity, Set<LogAction>>> graph = new HashMap<>();
@@ -512,10 +512,10 @@ public class DiffBasedAgent extends StatefulAgent {
         return actions;
     }
 
-    private ModelAction modelActionFromLogAction(State state, LogAction action) {
+    private ModelAction modelActionFromLogAction(LogAction action) {
 
         String resourceId = getResourceId(action.targetXpath);
-        for (ModelAction modelAction : state.targetedActions()) {
+        for (ModelAction modelAction : newState.targetedActions()) {
             String modelResourceId = getResourceId(modelAction.getTarget().toXPath());
             if (modelAction.getType().equals(action.actionType) && modelResourceId.equals(resourceId)) {
                 return modelAction;
@@ -528,13 +528,8 @@ public class DiffBasedAgent extends StatefulAgent {
     private LogActivity stateToActivity() {
 
         String activityName = newState.getActivity();
-
-        Logger.format("# of target for current state %s is %d", activityName, newState.targetedActions().size());
-
+        Logger.format("# of actions for current state %s is %d", activityName, newState.targetedActions().size());
         List<LogActivity> candidates = new ArrayList<>();
-        List<LogActivity> naiveCandidates = new ArrayList<>();
-
-        Logger.format("targeted actions are %s", newState.targetedActions());
 
         // Find best match for log activity object
         for (LogActivity from : graph.keySet()) {
@@ -542,8 +537,6 @@ public class DiffBasedAgent extends StatefulAgent {
             if (!from.activity.equals(activityName)) {
                 continue;
             }
-
-            naiveCandidates.add(from);
 
             Set<LogAction> actions = new HashSet<>();
             for (LogActivity to : graph.get(from).keySet()) {
@@ -553,115 +546,22 @@ public class DiffBasedAgent extends StatefulAgent {
             boolean invalidAction = false;
             for (LogAction action : actions) {
 
-                if (modelActionFromLogAction(newState, action) == null) {
+                if (modelActionFromLogAction(action) == null) {
                     invalidAction = true;
                     break;
                 }
             }
             if (!invalidAction) {
                 Logger.format("candidate is %s", from);
-                Logger.format("candidate actions are %s", actions);
                 candidates.add(from);
             }
         }
 
         Logger.format("# of candidate activities for %s is %d", activityName, candidates.size());
-        Logger.format("# of naive candidate activities for %s is %d", activityName, naiveCandidates.size());
 
-        if (candidates.isEmpty()) {
-            return naiveCandidates.get(0);
+        if (!candidates.isEmpty()) {
+            return candidates.get(0);
         }
-        return candidates.get(0);
-    }
-
-
-    // Finds next path to nearest activity in focus set that was not yet traversed
-    private List<Set<LogAction>> nextPath(LogActivity source) {
-
-        Queue<List<LogActivity>> q = new LinkedList<>();
-        Set<LogActivity> visited = new HashSet<>();
-//        q.add(Collections.singletonList(getMain()));
-        q.add(Collections.singletonList(source));
-
-        while (!q.isEmpty()) {
-
-            List<LogActivity> curr = q.poll();
-            LogActivity lastActivity = curr.get(curr.size()-1);
-            visited.add(lastActivity);
-
-            // Find a path towards a focus activity that is not erroneous
-            if (getActivitiesToReach().contains(lastActivity)) {
-                Logger.format("New activity to reach is %s", lastActivity);
-                return actionsFromPath(curr);
-            }
-
-            for (LogActivity next : graph.get(lastActivity).keySet()) {
-                if (!visited.contains(next)) {
-                    List<LogActivity> newPath = new ArrayList<>(curr);
-                    newPath.add(next);
-                    q.add(newPath);
-                }
-            }
-        }
-
-        return null;
-    }
-
-    private ModelAction getActionFromPath(String source) {
-
-        // Should never happen
-//        if (!reachingPath.contains(source)) {
-//            Logger.format("Reaching path does not contain source %s", source);
-//            return null;
-//        }
-
-        Set<LogAction> possibleActions = null;
-        for (Set<LogAction> actions : reachingPath) {
-            if (new ArrayList<>(actions).get(0).source.activity.equals(source)) {
-                possibleActions = actions;
-            }
-        }
-
-        // Should never happen
-        if (possibleActions == null) {
-            Logger.format("No action to take from %s to get to somewhere", source);
-            return null;
-        }
-
-        String target = new ArrayList<>(possibleActions).get(0).target.activity;
-
-        Logger.format("Source=%s; Target=%s; #actions=%d",
-                source, target, possibleActions.size());
-
-        for (LogAction logAction : possibleActions) {
-//            try {
-
-            Logger.format("Source=%s; Target=%s; Action=%s; Xpath=%s",
-                    source, target, logAction.actionType, logAction.targetXpath);
-
-            ModelAction modelAction = modelActionFromLogAction(newState, logAction);
-            if (modelAction != null && !modelAction.isVisited()) {
-                return modelAction;
-            }
-
-//                Name name = resolveName(logAction.targetXpath);
-//
-//                if (name != null) {
-//                    ModelAction action = newState.getAction(name, logAction.actionType);
-//                    Logger.format("Found action=%s", action);
-//
-//                    if (action != null && !action.isVisited()) {
-//                        return action;
-//                    }
-//                }
-
-//            } catch (Exception e) {
-//                e.printStackTrace();
-//                // Check next action
-//            }
-        }
-
-        Logger.format("None of the possible actions from %s to %s are valid", source, target);
         return null;
     }
 
@@ -681,62 +581,109 @@ public class DiffBasedAgent extends StatefulAgent {
         return toReach;
     }
 
-    private Action reachingModeAction(String source, String target) {
+    private Action reachingModeAction() {
 
-        ModelAction action = getActionFromPath(source);
+        int current = 0;
+        for (int i = 0; i < logActivityPath.size(); i++) {
+            if (logActivityPath.get(i).activity.equals(newState.getActivity())) {
+                current = i;
+            }
+        }
+
+        LogActivity thisActivity = logActivityPath.get(current);
+        LogActivity nextActivity = logActivityPath.get(current+1);
+
+        Set<LogAction> possibleActions = new HashSet<>(graph.get(thisActivity).get(nextActivity));
+
+        Logger.format("Source=%s; Target=%s; #actions=%d",
+                thisActivity.activity, nextActivity.activity, possibleActions.size());
+
+        for (LogAction logAction : possibleActions) {
+
+            Logger.format("Source=%s; Target=%s; Action=%s; Xpath=%s",
+                    thisActivity.activity, nextActivity.activity, logAction.actionType, logAction.targetXpath);
+
+            ModelAction modelAction = modelActionFromLogAction(logAction);
+            if (modelAction == null) {
+                // Remove incorrect action from graph
+                graph.get(thisActivity).get(nextActivity).remove(logAction);
+            } else {
+                if (!modelAction.isVisited()) {
+                    return modelAction;
+                }
+            }
+        }
+
+        Logger.format("None of the possible actions from %s to %s are valid", thisActivity.activity, nextActivity.activity);
 
         // All actions towards current focus activity didn't work
         // Maybe it will be possible to reach it via other changed activities
-        if (action == null) {
-            Logger.format("No viable action from source %s to target activity %s", source, target);
-            return findNextPath(source);
-        }
+        return findNextPath();
 
-        return action;
     }
 
-    private Action findNextPath(String source) {
+    private Action findNextPath() {
 
-        LogActivity current = stateToActivity();
+        LogActivity currentState = stateToActivity();
 
-        List<Set<LogAction>> path = nextPath(current);
-
-//        List<Set<LogAction>> path = null;
-//        int i = 0;
-//        do {
-//            path = nextPath(current.get(i));
-//            i++;
-//        } while (path == null && i < current.size());
-
-        if (path != null) {
-            mode = Mode.REACHING;
-            this.reachingPath = path;
-            String target = new ArrayList<>(path.get(path.size()-1)).get(0).target.activity;
-            Logger.format("Found next path from source activity %s to new target activity %s", source, target);
-
-            if (source.equals(target)) {
-                mode = mode.EXPLORING;
-                return exploringModeAction(source);
-            }
-
-            return reachingModeAction(source, target);
+        if (currentState == null) {
+            Logger.format("Could not map state %s to activity from log, restarting", newState.getActivity());
+            mode = Mode.INITIALIZING;
+            return getStartAction(nextRestartAction());
         }
 
-        Logger.format("Could not find path from source activity %s to any target, restarting", source);
-        mode = Mode.INITIALIZING;
+        Queue<List<LogActivity>> q = new LinkedList<>();
+        Set<LogActivity> visited = new HashSet<>();
+        q.add(Collections.singletonList(currentState));
 
+        // Finds next path to nearest activity in focus set that was not yet traversed
+        while (!q.isEmpty()) {
+
+            List<LogActivity> curr = q.poll();
+            LogActivity lastActivity = curr.get(curr.size()-1);
+            visited.add(lastActivity);
+
+            // Find a path towards a focus activity that is not erroneous
+            if (getActivitiesToReach().contains(lastActivity)) {
+
+                Logger.format("New activity to reach is %s", lastActivity);
+                this.logActivityPath = curr;
+
+                mode = Mode.REACHING;
+                String target = logActivityPath.get(logActivityPath.size()-1).activity;
+                Logger.format("Found next path from source activity %s to new target activity %s", newState.getActivity(), target);
+
+                if (newState.getActivity().equals(target)) {
+                    mode = mode.EXPLORING;
+                    return exploringModeAction();
+                }
+
+                return reachingModeAction();
+            }
+
+            for (LogActivity next : graph.get(lastActivity).keySet()) {
+                if (!visited.contains(next)) {
+                    List<LogActivity> newPath = new ArrayList<>(curr);
+                    newPath.add(next);
+                    q.add(newPath);
+                }
+            }
+        }
+
+        Logger.format("Could not find path from source activity %s to any target, restarting", newState.getActivity());
+        mode = Mode.INITIALIZING;
         return getStartAction(nextRestartAction());
     }
 
 
-    private Action exploringModeAction(String source) {
+    private Action exploringModeAction() {
 
         if (currentTransitionToCheck != null) {
 
             Logger.format("Current transition to check is %s", currentTransitionToCheck);
 
             // Found a transition, there is an edge in the ATG
-            if (source.equals(currentTransitionToCheck.target)) {
+            if (newState.getActivity().equals(currentTransitionToCheck.target)) {
 
                 Logger.format("Transition found between %s and %s!", currentTransitionToCheck.source, currentTransitionToCheck.target);
 
@@ -754,7 +701,7 @@ public class DiffBasedAgent extends StatefulAgent {
 
             // Choose a new focus action and start again
             if (!getActivitiesToReach().isEmpty()) {
-                return findNextPath(source);
+                return findNextPath();
             } else {
                 return null; // Finished?
             }
@@ -763,11 +710,11 @@ public class DiffBasedAgent extends StatefulAgent {
         // Assign new transition to check
         // First check existing transitions
         for (FocusTransition transition : existingTransitions.keySet()) {
-            if (transition.source.equals(source)) {
+            if (transition.source.equals(newState.getActivity())) {
                 this.currentTransitionToCheck = transition;
 
                 for (LogAction logAction : existingTransitions.get(transition)) {
-                    ModelAction modelAction = modelActionFromLogAction(newState, logAction);
+                    ModelAction modelAction = modelActionFromLogAction(logAction);
                     if (modelAction != null && !modelAction.isVisited()) {
                         return modelAction;
                     }
@@ -777,7 +724,7 @@ public class DiffBasedAgent extends StatefulAgent {
 
         // Next check new transitions
         for (FocusTransition transition : newTransitions.keySet()) {
-            if (transition.source.equals(source)) {
+            if (transition.source.equals(newState.getActivity())) {
                 this.currentTransitionToCheck = transition;
 
                 for (ModelAction modelAction : newState.targetedActions()) {
@@ -802,141 +749,48 @@ public class DiffBasedAgent extends StatefulAgent {
             }
         }
 
-        Logger.format("Current source %s does not match any transition, restarting", source);
+        Logger.format("Current source %s does not match any transition, restarting", newState.getActivity());
         mode = Mode.INITIALIZING;
 
         return getStartAction(nextRestartAction());
-
-        // If spotted an activity not existing in previous version, add it to focus
-//        if (!allActivities.contains(source)) {
-//            focusActivities.add(source);
-//        }
-
-//        if (currentState != null) {
-//            String previous = currentState.getActivity();
-//
-//            // Update as new edges only activities from focus set or new
-//            if (focusActivities.contains(previous)) {
-//
-//                if (!newEdges.containsKey(previous)) {
-//                    newEdges.put(previous, new HashMap<String, Set<LogAction>>());
-//                }
-//                if (!newEdges.get(previous).containsKey(source)) {
-//                    newEdges.get(previous).put(source, new HashSet<LogAction>());
-//                }
-//                String xpath = parseTargetXpath(currentAction.toString());
-//                newEdges.get(previous).get(source).add(new LogAction(currentAction.getType(), xpath));
-//            }
-//        }
-//
-//        // If not in focus, go back
-//        if (!focusActivities.contains(source)) {
-//
-//            if (currentState != null) {
-//                Logger.format("Trying to go back from activity %s to activity %s", source, currentState.getActivity());
-//                for (StateTransition st : getGraph().getInStateTransitions(newState)) {
-//                    if (st.getTarget().equals(currentState.getActivity())) {
-//                        return st.getAction();
-//                    }
-//                }
-//
-//                return newState.getBackAction();
-//            }
-//
-//            // If current state is null it is probably the LeakLauncherActivity
-//            mode = Mode.INITIALIZING;
-//            return getStartAction(nextRestartAction());
-//
-//        } else {
-//
-//            exploringStates.add(newState);
-//
-//            Logger.format("Exploring activity %s, total actions to explore %d", source, newState.targetedActions().size());
-//
-//            for (ModelAction action : newState.targetedActions()) {
-//                if (!action.isVisited()) {
-//                    return action;
-//                }
-//            }
-//            // If exhausted the activity, remove from focusActivities set and update graph
-//            focusActivities.remove(source);
-//            exploringStates.remove(newState);
-//
-//            graph.put(source, newEdges.get(source));
-//
-//            // Check if can return to another focus activity that is currently being explored through visited actions
-//            for (State state : exploringStates) {
-//                for (StateTransition st : getGraph().getInStateTransitions(newState)) {
-//                    if (st.getTarget().equals(state) && !state.getActivity().equals(source)) {
-//                        return st.getAction();
-//                    }
-//                }
-//            }
-//
-//            // Choose a new focus action and start again
-//            // Should clear exploringStates?
-//            if (!focusActivities.isEmpty()) {
-//                return findNextPath(source);
-//            }
-//
-//            Logger.println("No more focus activities, can stop execution");
-//        }
-
-        // Finished all activities
-//        return null;
     }
 
     private static String getNamespace(String activity) {
         return activity.substring(0, activity.lastIndexOf(".") - 1);
     }
 
-
     @Override
     protected Action selectNewActionNonnull() {
 
-        String source = newState.getActivity();
-
         // For example in cases like LeakLauncherActivity
-        if (!getNamespace(source).startsWith(namespace)) {
-            Logger.format("Activity %s outside the namespace, trying to get out", source);
-            return selectNewActionRandomly();
+        if (!getNamespace(newState.getActivity()).startsWith(namespace)) {
+            Logger.format("Activity %s outside the namespace, trying to get out", newState.getActivity());
+            mode = Mode.INITIALIZING;
+            return getStartAction(nextRestartAction());
         }
 
         if (mode == Mode.INITIALIZING) {
-            Logger.format("Mode INITIALIZING, going to find a path to a focus activity from %s", source);
-            return findNextPath(source);
+            Logger.format("Mode INITIALIZING, going to find a path to a focus activity from %s", newState.getActivity());
+            return findNextPath();
         }
 
-        String target = new ArrayList<>(reachingPath.get(reachingPath.size()-1)).get(0).target.activity;
+        String target = logActivityPath.get(logActivityPath.size()-1).activity;
 
         if (mode != Mode.EXPLORING) {
-            if (target.equals(source)) {
+            if (target.equals(newState.getActivity())) {
                 Logger.format("Reached target activity %s, moving to mode EXPLORING", target);
                 mode = Mode.EXPLORING;
-//            } else if (focusActivities.contains(source)) {
-//                Logger.format("Reached focus activity %s (but not target %s), moving to mode EXPLORING", source, target);
-//                mode = Mode.EXPLORING;
             }
         }
 
         if (mode == Mode.REACHING) {
-
-//            String expectedNext = getExpectedNext(currentState.getActivity());
-//
-//            // Mistakenly moved to an unexpected activity, then go back
-//            if (!expectedNext.equals(source) && !expectedNext.equals(currentState.getActivity())) {
-//                Logger.format("Mode REACHING, strayed from target %s and now in %s", expectedNext, source);
-//
-//                return newState.getBackAction();
-//            }
-
-            Logger.format("Mode REACHING, trying to reach target activity %s from source activity %s", target, source);
-            return reachingModeAction(source, target);
+            Logger.format("Mode REACHING, trying to reach target activity %s from source activity %s", target, newState.getActivity());
+            return reachingModeAction();
         }
 
         if (mode == Mode.EXPLORING) {
-            Logger.format("Mode EXPLORING, now in activity %s", source);
-            return exploringModeAction(source);
+            Logger.format("Mode EXPLORING, now in activity %s", newState.getActivity());
+            return exploringModeAction();
         }
 
         Logger.println("Null action");
