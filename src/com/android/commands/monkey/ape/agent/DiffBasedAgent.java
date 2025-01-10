@@ -148,8 +148,15 @@ public class DiffBasedAgent extends StatefulAgent {
 
     private List<LogActivity> logActivityPath = new ArrayList<>();
 
+    private LogActivity currentLogActivity = null;
+    private LogActivity nextLogActivity = null;
+
     // Activity -> Activity -> Set of Actions
     private Map<LogActivity, Map<LogActivity, Set<LogAction>>> graph = new HashMap<>();
+
+    private Set<LogActivity> checkedActivities = new HashSet<>();
+
+    private Map<LogActivity, Set<LogActivity>> invalidMapping = new HashMap<>();
 
 
 
@@ -492,26 +499,6 @@ public class DiffBasedAgent extends StatefulAgent {
 
 
 
-//    private String getMain() {
-//        for (String activity : graph.keySet()) {
-//            if (activity.contains("MainActivity")) {
-//                return activity;
-//            }
-//        }
-//
-//        return null;
-//    }
-
-
-    private List<Set<LogAction>> actionsFromPath(List<LogActivity> path) {
-
-        List<Set<LogAction>> actions = new ArrayList<>();
-        for (int i = 0; i < path.size()-1; i++) {
-            actions.add(graph.get(path.get(i)).get(path.get(i+1)));
-        }
-        return actions;
-    }
-
     private ModelAction modelActionFromLogAction(LogAction action) {
 
         String resourceId = getResourceId(action.targetXpath);
@@ -525,11 +512,21 @@ public class DiffBasedAgent extends StatefulAgent {
         return null;
     }
 
-    private LogActivity stateToActivity() {
+    private List<String> getWidgets() {
+        List<String> widgets = new ArrayList<>();
+        for (ModelAction modelAction : newState.targetedActions()) {
+            widgets.add(getResourceId(modelAction.getTarget().toXPath()));
+        }
+        return widgets;
+    }
+
+    private List<LogActivity> stateToActivities() {
 
         String activityName = newState.getActivity();
         Logger.format("# of actions for current state %s is %d", activityName, newState.targetedActions().size());
         List<LogActivity> candidates = new ArrayList<>();
+
+        Logger.format("Current state widgets %s", getWidgets());
 
         // Find best match for log activity object
         for (LogActivity from : graph.keySet()) {
@@ -538,31 +535,35 @@ public class DiffBasedAgent extends StatefulAgent {
                 continue;
             }
 
-            Set<LogAction> actions = new HashSet<>();
-            for (LogActivity to : graph.get(from).keySet()) {
-                actions.addAll(graph.get(from).get(to));
-            }
-
             boolean invalidAction = false;
-            for (LogAction action : actions) {
+            for (LogActivity to : graph.get(from).keySet()) {
+                for (LogAction action : graph.get(from).get(to)) {
 
-                if (modelActionFromLogAction(action) == null) {
-                    invalidAction = true;
+                    Logger.format("activity from log %s, widget %s", from, getResourceId(action.targetXpath));
+                    if (modelActionFromLogAction(action) == null) {
+                        invalidAction = true;
+                        break;
+                    }
+                }
+                if (invalidAction) {
                     break;
                 }
+
             }
+            Logger.format("activity from log %s, is invalid %s", from, invalidAction);
+
             if (!invalidAction) {
-                Logger.format("candidate is %s", from);
-                candidates.add(from);
+
+                LogActivity oldLogActivity = logActivityFromState();
+                if (!invalidMapping.containsKey(oldLogActivity) || !invalidMapping.get(oldLogActivity).contains(from)) {
+                    candidates.add(from);
+                }
             }
         }
 
         Logger.format("# of candidate activities for %s is %d", activityName, candidates.size());
 
-        if (!candidates.isEmpty()) {
-            return candidates.get(0);
-        }
-        return null;
+        return candidates;
     }
 
     private Set<LogActivity> getActivitiesToReach() {
@@ -570,12 +571,16 @@ public class DiffBasedAgent extends StatefulAgent {
 
         for (FocusTransition transition : existingTransitions.keySet()) {
             for (LogAction action : existingTransitions.get(transition)) {
-                toReach.add(action.source);
+                if (!checkedActivities.contains(action.source)) {
+                    toReach.add(action.source);
+                }
             }
         }
         for (FocusTransition transition : newTransitions.keySet()) {
             for (LogAction action : newTransitions.get(transition)) {
-                toReach.add(action.source);
+                if (!checkedActivities.contains(action.source)) {
+                    toReach.add(action.source);
+                }
             }
         }
         return toReach;
@@ -583,38 +588,46 @@ public class DiffBasedAgent extends StatefulAgent {
 
     private Action reachingModeAction() {
 
-        int current = 0;
-        for (int i = 0; i < logActivityPath.size(); i++) {
-            if (logActivityPath.get(i).activity.equals(newState.getActivity())) {
-                current = i;
-            }
-        }
+        // Current activity is invalid for all possibilities of activities according to state and widgets
+//        if (!stateToActivities().contains(currentLogActivity)) {
+//            Logger.format("Activity %s from the path is invalid according to state, looking for another path", currentLogActivity);
+//            return findNextPath();
+//        }
 
-        LogActivity thisActivity = logActivityPath.get(current);
-        LogActivity nextActivity = logActivityPath.get(current+1);
-
-        Set<LogAction> possibleActions = new HashSet<>(graph.get(thisActivity).get(nextActivity));
+        Set<LogAction> possibleActions = new HashSet<>(graph.get(currentLogActivity).get(nextLogActivity));
 
         Logger.format("Source=%s; Target=%s; #actions=%d",
-                thisActivity.activity, nextActivity.activity, possibleActions.size());
+                currentLogActivity, nextLogActivity, possibleActions.size());
 
         for (LogAction logAction : possibleActions) {
 
             Logger.format("Source=%s; Target=%s; Action=%s; Xpath=%s",
-                    thisActivity.activity, nextActivity.activity, logAction.actionType, logAction.targetXpath);
+                    currentLogActivity, nextLogActivity, logAction.actionType, logAction.targetXpath);
 
             ModelAction modelAction = modelActionFromLogAction(logAction);
-            if (modelAction == null) {
-                // Remove incorrect action from graph
-                graph.get(thisActivity).get(nextActivity).remove(logAction);
-            } else {
+            if (modelAction != null) {
                 if (!modelAction.isVisited()) {
+
+                    this.currentLogActivity = nextLogActivity;
+                    if (logActivityPath.indexOf(currentLogActivity)+1 < logActivityPath.size()) {
+                        this.nextLogActivity = logActivityPath.get(logActivityPath.indexOf(currentLogActivity)+1);
+                    } else {
+                        this.nextLogActivity = null;
+                    }
+
                     return modelAction;
                 }
             }
         }
 
-        Logger.format("None of the possible actions from %s to %s are valid", thisActivity.activity, nextActivity.activity);
+        Logger.format("None of the possible actions from %s to %s are valid", currentLogActivity, nextLogActivity);
+
+
+        LogActivity fromState = logActivityFromState();
+        if (!invalidMapping.containsKey(fromState)) {
+            invalidMapping.put(fromState, new HashSet<LogActivity>());
+        }
+        invalidMapping.get(fromState).add(currentLogActivity);
 
         // All actions towards current focus activity didn't work
         // Maybe it will be possible to reach it via other changed activities
@@ -622,19 +635,29 @@ public class DiffBasedAgent extends StatefulAgent {
 
     }
 
+    private LogActivity logActivityFromState() {
+        LogActivity logActivity = new LogActivity();
+        logActivity.activity = newState.getActivity();
+        logActivity.id = newState.getGraphId();
+        return logActivity;
+    }
+
     private Action findNextPath() {
 
-        LogActivity currentState = stateToActivity();
+        List<LogActivity> activities = stateToActivities();
 
-        if (currentState == null) {
+        if (activities.isEmpty()) {
             Logger.format("Could not map state %s to activity from log, restarting", newState.getActivity());
-            mode = Mode.INITIALIZING;
-            return getStartAction(nextRestartAction());
+            return initialize();
         }
 
+        LogActivity current = activities.get(0);
+        Logger.format("Choosing %s as current log activity", current);
+
+        // Take first activity if there is more than one
         Queue<List<LogActivity>> q = new LinkedList<>();
         Set<LogActivity> visited = new HashSet<>();
-        q.add(Collections.singletonList(currentState));
+        q.add(Collections.singletonList(current));
 
         // Finds next path to nearest activity in focus set that was not yet traversed
         while (!q.isEmpty()) {
@@ -650,13 +673,18 @@ public class DiffBasedAgent extends StatefulAgent {
                 this.logActivityPath = curr;
 
                 mode = Mode.REACHING;
-                String target = logActivityPath.get(logActivityPath.size()-1).activity;
+                LogActivity target = logActivityPath.get(logActivityPath.size()-1);
                 Logger.format("Found next path from source activity %s to new target activity %s", newState.getActivity(), target);
 
-                if (newState.getActivity().equals(target)) {
+                if (newState.getActivity().equals(target.activity)) {
                     mode = mode.EXPLORING;
                     return exploringModeAction();
                 }
+
+                Logger.format("The path is %s", curr);
+
+                this.currentLogActivity = curr.get(0);
+                this.nextLogActivity = curr.get(1);
 
                 return reachingModeAction();
             }
@@ -671,8 +699,7 @@ public class DiffBasedAgent extends StatefulAgent {
         }
 
         Logger.format("Could not find path from source activity %s to any target, restarting", newState.getActivity());
-        mode = Mode.INITIALIZING;
-        return getStartAction(nextRestartAction());
+        return initialize();
     }
 
 
@@ -749,9 +776,17 @@ public class DiffBasedAgent extends StatefulAgent {
             }
         }
 
-        Logger.format("Current source %s does not match any transition, restarting", newState.getActivity());
-        mode = Mode.INITIALIZING;
+        checkedActivities.add(logActivityPath.get(logActivityPath.size()-1));
 
+        Logger.format("Current source %s does not match any transition, restarting", newState.getActivity());
+        return initialize();
+    }
+
+    private Action initialize() {
+        mode = Mode.INITIALIZING;
+        this.logActivityPath = null;
+        this.currentLogActivity = null;
+        this.nextLogActivity = null;
         return getStartAction(nextRestartAction());
     }
 
@@ -765,8 +800,7 @@ public class DiffBasedAgent extends StatefulAgent {
         // For example in cases like LeakLauncherActivity
         if (!getNamespace(newState.getActivity()).startsWith(namespace)) {
             Logger.format("Activity %s outside the namespace, trying to get out", newState.getActivity());
-            mode = Mode.INITIALIZING;
-            return getStartAction(nextRestartAction());
+            return initialize();
         }
 
         if (mode == Mode.INITIALIZING) {
@@ -774,7 +808,7 @@ public class DiffBasedAgent extends StatefulAgent {
             return findNextPath();
         }
 
-        String target = logActivityPath.get(logActivityPath.size()-1).activity;
+        LogActivity target = logActivityPath.get(logActivityPath.size()-1);
 
         if (mode != Mode.EXPLORING) {
             if (target.equals(newState.getActivity())) {
