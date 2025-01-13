@@ -508,25 +508,25 @@ public class DiffBasedAgent extends StatefulAgent {
                 continue;
             }
 
-            boolean noInvalid = true;
+            boolean hasInvalid = false;
             boolean hasValid = false;
             for (LogActivity to : graph.get(from).keySet()) {
                 for (LogAction action : graph.get(from).get(to)) {
 
                     if (modelActionFromLogAction(action) == null) {
-                        noInvalid = false;
+                        hasInvalid = true;
                         break;
                     } else {
                         hasValid = true;
                     }
                 }
-                if (!noInvalid) {
+                if (hasInvalid) {
                     break;
                 }
 
             }
 
-            if (noInvalid && hasValid) {
+            if (!hasInvalid && hasValid) {
 
                 LogActivity fromState = logActivityFromState(newState);
                 if (!invalidMapping.containsKey(fromState) || !invalidMapping.get(fromState).contains(from)) {
@@ -656,6 +656,7 @@ public class DiffBasedAgent extends StatefulAgent {
         Logger.format("The path is %s", path);
 
         if (newState.getActivity().equals(target.activity)) {
+            Logger.format("Preparing path but already in target %s", target);
             mode = mode.EXPLORING;
             return exploringModeAction();
         } else {
@@ -725,6 +726,8 @@ public class DiffBasedAgent extends StatefulAgent {
 
     private Action findNextPath() {
 
+        Logger.format("Trying to find next path for %s", newState.getActivity());
+
         List<LogActivity> activities = stateToActivities();
 
         if (activities.isEmpty()) {
@@ -738,8 +741,12 @@ public class DiffBasedAgent extends StatefulAgent {
             return nextPathAction;
         }
 
-        // Don't give up, look for MainActivity
-        nextPathAction = findNextPathIterative(activities, activitiesByKeyword("MainActivity"), true);
+        Logger.format("No paths from %s to any focus transition, going into desperate mode", newState.getActivity());
+
+        if (!newState.getActivity().contains("MainActivity")) {
+            // Don't give up, look for a path to MainActivity
+            nextPathAction = findNextPathIterative(activities, activitiesByKeyword("MainActivity"), true);
+        }
 
         if (nextPathAction == null) {
             Logger.format("Could not find path from source activity %s to any target, restarting", newState.getActivity());
