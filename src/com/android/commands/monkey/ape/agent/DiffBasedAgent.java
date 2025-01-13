@@ -497,9 +497,11 @@ public class DiffBasedAgent extends StatefulAgent {
 
         String activityName = newState.getActivity();
         Logger.format("# of actions for current state %s is %d", activityName, newState.targetedActions().size());
-        List<LogActivity> candidates = new ArrayList<>();
+        TreeMap<Double, LogActivity> candidates = new TreeMap<>();
 
         Logger.format("Current state widgets %s", getWidgets());
+
+        LogActivity fromState = logActivityFromState(newState);
 
         // Find best match for log activity object
         for (LogActivity from : graph.keySet()) {
@@ -508,36 +510,33 @@ public class DiffBasedAgent extends StatefulAgent {
                 continue;
             }
 
-            boolean hasInvalid = false;
-            boolean hasValid = false;
+            if (invalidMapping.containsKey(fromState) && invalidMapping.get(fromState).contains(from)) {
+                continue;
+            }
+
+            int total = 0;
+            int invalid = 0;
+
             for (LogActivity to : graph.get(from).keySet()) {
                 for (LogAction action : graph.get(from).get(to)) {
 
                     if (modelActionFromLogAction(action) == null) {
-                        hasInvalid = true;
-                        break;
-                    } else {
-                        hasValid = true;
+                        invalid += 1;
                     }
-                }
-                if (hasInvalid) {
-                    break;
+
+                    total += 1;
                 }
 
             }
 
-            if (!hasInvalid && hasValid) {
-
-                LogActivity fromState = logActivityFromState(newState);
-                if (!invalidMapping.containsKey(fromState) || !invalidMapping.get(fromState).contains(from)) {
-                    candidates.add(from);
-                }
+            if (total > 0) {
+                candidates.put((double)invalid / total, from);
             }
         }
 
         Logger.format("# of candidate activities for %s is %d", activityName, candidates.size());
 
-        return candidates;
+        return new ArrayList<>(candidates.values());
     }
 
     private Set<LogActivity> getActivitiesToReach() {
