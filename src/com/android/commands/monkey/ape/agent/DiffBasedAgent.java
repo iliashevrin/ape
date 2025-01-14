@@ -128,7 +128,7 @@ public class DiffBasedAgent extends StatefulAgent {
 
 
     public static enum Mode {
-        INITIALIZING, REACHING, EXPLORING, DESPERATE;
+        INITIALIZING, REACHING, CHECKING;
     }
 
 
@@ -138,11 +138,10 @@ public class DiffBasedAgent extends StatefulAgent {
     private String namespace;
 
     private Set<String> allActivities = new HashSet<>();
-    private Set<State> exploringStates = new HashSet<>();
 
-    private FocusTransition currentTransitionToCheck = null;
-    private Map<FocusTransition, Set<LogAction>> existingTransitions = new HashMap<>();
-    private Map<FocusTransition, Set<LogAction>> newTransitions = new HashMap<>();
+    private FocusTransition transition = null;
+    private Map<LogActivity, Set<LogAction>> existingActions = new HashMap<>();
+    private Map<LogActivity, Set<LogAction>> toSkipActions = new HashMap<>();
 
     private Mode mode = Mode.INITIALIZING;
 
@@ -165,46 +164,30 @@ public class DiffBasedAgent extends StatefulAgent {
         super(ape, graph);
         this.logFile = previousLog;
 
-        Set<FocusTransition> transitions = parseFocusTransitions(focusSet);
+        buildATGFromLog(previousLog);
+        FocusTransition transition = parseFocusTransition(focusSet);
+        this.existingActions = getExistingActions(transition);
+        if (existingActions.isEmpty()) {
+            this.toSkipActions = getActionsToSkip(transition);
+        }
 
-
-        if (transitions.isEmpty()) {
-            Logger.println("No focus activities, can stop execution");
-        } else {
-
-            buildATGFromLog(previousLog);
-
-            for (FocusTransition ft : transitions) {
-                Set<LogAction> actionsToCheck = getExistingActionsToCheck(ft);
-                if (!actionsToCheck.isEmpty()) {
-                    this.existingTransitions.put(ft, actionsToCheck);
-                } else {
-                    this.newTransitions.put(ft, getExistingActionsToSkip(ft));
-                }
-            }
-
-            try {
-                Document manifest = parseManifest(manifestFile);
-                this.allActivities = getActivities(manifest);
-                this.namespace = getNamespace(manifest);
-            } catch (Exception e) {
-                e.printStackTrace();
-                throw new StopTestingException("Unable to parse manifest XML file");
-            }
+        try {
+            Document manifest = parseManifest(manifestFile);
+            this.allActivities = getActivities(manifest);
+            this.namespace = getNamespace(manifest);
+        } catch (Exception e) {
+            e.printStackTrace();
+            throw new StopTestingException("Unable to parse manifest XML file");
         }
 
     }
 
-    private static Set<FocusTransition> parseFocusTransitions(String focusSet) {
-        Set<FocusTransition> transitions = new HashSet<>();
-        for (String transitionString : focusSet.split(",")) {
-            String[] split = transitionString.split("_");
-            FocusTransition t = new FocusTransition();
-            t.source = split[0];
-            t.target = split[1];
-            transitions.add(t);
-        }
-        return transitions;
+    private static FocusTransition parseFocusTransition(String str) {
+        FocusTransition transition = new FocusTransition();
+        String[] split = str.split("_");
+        transition.source = split[0];
+        transition.target = split[1];
+        return transition;
     }
 
     public static String getResourceId(String xpath) {
@@ -223,45 +206,38 @@ public class DiffBasedAgent extends StatefulAgent {
         return xpath;
     }
 
-    private Set<LogAction> getExistingActionsToCheck(FocusTransition ft) {
-        Set<LogAction> actionsToCheck = new HashSet<LogAction>();
+    private Map<LogActivity, Set<LogAction>> getExistingActions(FocusTransition ft) {
+        Map<LogActivity, Set<LogAction>> existingActions = new HashMap<>();
         for (LogActivity source : graph.keySet()) {
             if (source.activity.equals(ft.source)) {
+                existingActions.put(source, new HashSet<LogAction>());
                 for (LogActivity target : graph.get(source).keySet()) {
                     if (target.activity.equals(ft.target)) {
-                        actionsToCheck.addAll(graph.get(source).get(target));
+                        existingActions.get(source).addAll(graph.get(source).get(target));
                     }
                 }
-            }
-        }
-        return actionsToCheck;
-    }
-
-    private Set<LogAction> getExistingActionsToSkip(FocusTransition ft) {
-        Set<LogAction> actionsToSkip = new HashSet<LogAction>();
-        for (LogActivity source : graph.keySet()) {
-            if (source.activity.equals(ft.source)) {
-                for (LogActivity target : graph.get(source).keySet()) {
-                    actionsToSkip.addAll(graph.get(source).get(target));
+                if (existingActions.get(source).isEmpty()) {
+                    existingActions.remove(source);
                 }
             }
         }
-        return actionsToSkip;
+        return existingActions;
     }
 
-    private FocusTransition nextToCheck(String source) {
-
-        for (FocusTransition transition : existingTransitions.keySet()) {
-            if (transition.source.equals(source)) {
-                return transition;
+    private Map<LogActivity, Set<LogAction>> getActionsToSkip(FocusTransition ft) {
+        Map<LogActivity, Set<LogAction>> toSkip = new HashMap<>();
+        for (LogActivity source : graph.keySet()) {
+            if (source.activity.equals(ft.source)) {
+                toSkip.put(source, new HashSet<LogAction>());
+                for (LogActivity target : graph.get(source).keySet()) {
+                    toSkip.get(source).addAll(graph.get(source).get(target));
+                }
+                if (toSkip.get(source).isEmpty()) {
+                    toSkip.remove(source);
+                }
             }
         }
-        for (FocusTransition transition : newTransitions.keySet()) {
-            if (transition.source.equals(source)) {
-                return transition;
-            }
-        }
-        return null;
+        return toSkip;
     }
 
 
@@ -529,7 +505,8 @@ public class DiffBasedAgent extends StatefulAgent {
 
             }
 
-            if (total > 0) {
+            if (total > 0 && invalid < total) {
+                Logger.format("Adding %s to candidates of %s", from, activityName);
                 candidates.put((double)invalid / total, from);
             }
         }
@@ -540,26 +517,25 @@ public class DiffBasedAgent extends StatefulAgent {
     }
 
     private Set<LogActivity> getActivitiesToReach() {
-        Set<LogActivity> toReach = new HashSet<>();
 
-        for (FocusTransition transition : existingTransitions.keySet()) {
-            for (LogAction action : existingTransitions.get(transition)) {
-                if (!checkedActivities.contains(action.source)) {
-                    toReach.add(action.source);
+        Set<LogActivity> toReach = new HashSet<>();
+        if (!this.existingActions.isEmpty()) {
+            for (LogActivity activity : this.existingActions.keySet()) {
+                if (!checkedActivities.contains(activity)) {
+                    toReach.add(activity);
                 }
             }
-        }
-        for (FocusTransition transition : newTransitions.keySet()) {
-            for (LogAction action : newTransitions.get(transition)) {
-                if (!checkedActivities.contains(action.source)) {
-                    toReach.add(action.source);
+        } else {
+            for (LogActivity activity : this.toSkipActions.keySet()) {
+                if (!checkedActivities.contains(activity)) {
+                    toReach.add(activity);
                 }
             }
         }
         return toReach;
     }
 
-    private List<Action> candidateActions(List<String> desiredNextActivities) {
+    private List<Action> candidateActions(String nextActivity) {
         String currActivity = newState.getActivity();
 
         List<Action> candidates = new ArrayList<>();
@@ -571,7 +547,7 @@ public class DiffBasedAgent extends StatefulAgent {
             for (LogActivity from : graph.keySet()) {
                 if (from.activity.equals(currActivity)) {
                     for (LogActivity to : graph.get(from).keySet()) {
-                        if (desiredNextActivities.contains(to.activity)) {
+                        if (nextActivity.equals(to.activity)) {
                             for (LogAction action : graph.get(from).get(to)) {
                                 String resourceId = getResourceId(action.targetXpath);
                                 if (resourceId.equals(modelResourceId) && modelAction.getType().equals(action.actionType)) {
@@ -587,7 +563,9 @@ public class DiffBasedAgent extends StatefulAgent {
         return candidates;
     }
 
-    private Action reachingModeAction() {
+    private Action chooseActionToReach() {
+
+        Logger.format("Source=%s; Target=%s", currentLogActivity, nextLogActivity);
 
         if (!this.currentLogActivity.activity.equals(newState.getActivity())) {
 
@@ -603,42 +581,49 @@ public class DiffBasedAgent extends StatefulAgent {
             return findNextPath();
         }
 
-        List<Action> candidates = candidateActions(Arrays.asList(nextLogActivity.activity));
-        Logger.format("Source=%s; Target=%s; Candidate size=%d", currentLogActivity, nextLogActivity, candidates.size());
+        Action newAction = null;
 
-        for (Action action : candidates) {
-
-            Logger.format("Source=%s; Target=%s; Action=%s; Xpath=%s",
-                    currentLogActivity, nextLogActivity, action.getType(), action.getTarget().toXPath());
-
-
-            if (!action.isVisited()) {
-
-                this.currentLogActivity = nextLogActivity;
-                if (logActivityPath.indexOf(currentLogActivity)+1 < logActivityPath.size()) {
-                    this.nextLogActivity = logActivityPath.get(logActivityPath.indexOf(currentLogActivity)+1);
-                } else {
-                    this.nextLogActivity = null;
-                }
-
-                return action;
+        // First check original candidates from graph
+        for (LogAction logAction : graph.get(currentLogActivity).get(nextLogActivity)) {
+            ModelAction modelAction = modelActionFromLogAction(logAction);
+            if (modelAction != null && !modelAction.isVisited()) {
+                Logger.format("Original Action=%s; Xpath=%s", modelAction.getType(), modelAction.getTarget().toXPath());
+                newAction = modelAction;
             }
-
         }
 
-        Logger.format("None of the possible actions from %s to %s are valid", currentLogActivity, nextLogActivity);
+        List<Action> candidates = candidateActions(nextLogActivity.activity);
+        Logger.format("Candidate size=%d", currentLogActivity, nextLogActivity, candidates.size());
 
-
-        LogActivity fromState = logActivityFromState(newState);
-        if (!invalidMapping.containsKey(fromState)) {
-            invalidMapping.put(fromState, new HashSet<LogActivity>());
+        for (Action modelAction : candidates) {
+            if (!modelAction.isVisited()) {
+                Logger.format("Other Action=%s; Xpath=%s", modelAction.getType(), modelAction.getTarget().toXPath());
+                newAction = modelAction;
+            }
         }
-        invalidMapping.get(fromState).add(currentLogActivity);
 
-        // All actions towards current focus activity didn't work
-        // Maybe it will be possible to reach it via other changed activities
-        return findNextPath();
+        if (newAction == null) {
 
+            Logger.format("None of the possible actions from %s to %s are valid", currentLogActivity, nextLogActivity);
+            LogActivity fromState = logActivityFromState(newState);
+            if (!invalidMapping.containsKey(fromState)) {
+                invalidMapping.put(fromState, new HashSet<LogActivity>());
+            }
+            invalidMapping.get(fromState).add(currentLogActivity);
+
+            // All actions towards current focus activity didn't work
+            // Maybe it will be possible to reach it via other changed activities
+            return findNextPath();
+        }
+
+        this.currentLogActivity = nextLogActivity;
+        if (logActivityPath.indexOf(currentLogActivity)+1 < logActivityPath.size()) {
+            this.nextLogActivity = logActivityPath.get(logActivityPath.indexOf(currentLogActivity)+1);
+        } else {
+            this.nextLogActivity = null;
+        }
+
+        return newAction;
     }
 
     private LogActivity logActivityFromState(State state) {
@@ -648,26 +633,25 @@ public class DiffBasedAgent extends StatefulAgent {
         return logActivity;
     }
 
-    private Action preparePath(List<LogActivity> path, LogActivity target, boolean desperate) {
+    private Action preparePath(List<LogActivity> path) {
 
-        Logger.format("Found next path from source activity %s to new target activity %s", newState.getActivity(), target);
         this.logActivityPath = path;
         Logger.format("The path is %s", path);
+        LogActivity target = path.get(path.size()-1);
 
         if (newState.getActivity().equals(target.activity)) {
             Logger.format("Preparing path but already in target %s", target);
-            mode = mode.EXPLORING;
-            return exploringModeAction();
+            return chooseActionToCheck();
         } else {
-            this.mode = desperate ? Mode.DESPERATE : Mode.REACHING;
+            this.mode = Mode.REACHING;
             this.currentLogActivity = path.get(0);
             this.nextLogActivity = path.get(1);
-            return reachingModeAction();
+            return chooseActionToReach();
         }
 
     }
 
-    private Action bfs(LogActivity current, Set<LogActivity> targets, boolean desperate) {
+    private List<LogActivity> bfs(LogActivity current, Set<LogActivity> targets) {
 
         Queue<List<LogActivity>> q = new LinkedList<>();
         Set<LogActivity> visited = new HashSet<>();
@@ -682,7 +666,7 @@ public class DiffBasedAgent extends StatefulAgent {
 
             // Find a path towards a target activity
             if (targets.contains(lastActivity)) {
-                return preparePath(curr, lastActivity, desperate);
+                return curr;
             }
 
             for (LogActivity next : graph.get(lastActivity).keySet()) {
@@ -697,30 +681,48 @@ public class DiffBasedAgent extends StatefulAgent {
         return null;
     }
 
-    private Action findNextPathIterative(List<LogActivity> sources, Set<LogActivity> targets, boolean desperate) {
+    private List<LogActivity> findNextPathIterative(List<LogActivity> sources, Set<LogActivity> targets) {
 
-        Action nextPathAction = null;
-        int index = 0;
-        do {
+        TreeSet<List<LogActivity>> candidatePaths = new TreeSet<>(new Comparator<List<LogActivity>>() {
+            @Override
+            public int compare(List<LogActivity> l1, List<LogActivity> l2) {
+                return Integer.compare(l1.size(), l2.size());
+            }
+        });
 
-            LogActivity current = sources.get(index);
-            index++;
-            Logger.format("Choosing %s as current log activity", current);
-
-            nextPathAction = bfs(current, targets, desperate);
-
-            // If no choice left, add current log activity to the invalid map
-            if (nextPathAction == null && desperate) {
+        for (LogActivity source : sources) {
+            Logger.format("Checking %s as current log activity", source);
+            List<LogActivity> path = bfs(source, targets);
+            if (path != null && validateFirstStepInPath(path)) {
+                candidatePaths.add(path);
+            } else {
                 LogActivity fromState = logActivityFromState(newState);
                 if (!invalidMapping.containsKey(fromState)) {
                     invalidMapping.put(fromState, new HashSet<LogActivity>());
                 }
-                invalidMapping.get(fromState).add(current);
+                invalidMapping.get(fromState).add(source);
             }
+        }
 
-        } while (nextPathAction == null && index < sources.size());
+        if (candidatePaths.isEmpty()) {
+            return null;
+        }
 
-        return nextPathAction;
+        return new ArrayList<>(candidatePaths).get(0);
+    }
+
+    // Path is at least 2 steps long
+    private boolean validateFirstStepInPath(List<LogActivity> path) {
+        LogActivity first = path.get(0);
+        LogActivity second = path.get(1);
+
+        for (LogAction action : graph.get(first).get(second)) {
+            if (modelActionFromLogAction(action) != null) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private Action findNextPath() {
@@ -734,72 +736,59 @@ public class DiffBasedAgent extends StatefulAgent {
             return initialize();
         }
 
-        Action nextPathAction = findNextPathIterative(activities, getActivitiesToReach(), false);
+        List<LogActivity> bestPath = findNextPathIterative(activities, getActivitiesToReach());
 
-        if (nextPathAction != null) {
-            return nextPathAction;
+        if (bestPath != null) {
+            return preparePath(bestPath);
         }
 
-        Logger.format("No paths from %s to any focus transition, going into desperate mode", newState.getActivity());
-
-        if (!newState.getActivity().contains("MainActivity")) {
-            // Don't give up, look for a path to MainActivity
-            nextPathAction = findNextPathIterative(activities, activitiesByKeyword("MainActivity"), true);
-        }
-
-        if (nextPathAction == null) {
-            Logger.format("Could not find path from source activity %s to any target, restarting", newState.getActivity());
-            return initialize();
-        }
-
-        return nextPathAction;
+        Logger.format("Could not find path from source activity %s to any target, picking at random", newState.getActivity());
+        mode = Mode.INITIALIZING;
+        return selectNewActionRandomly();
     }
 
 
     private Action assignTransitionToCheck() {
 
-        Logger.format("Trying to assign transition to check from existing transitions %s", existingTransitions.keySet());
+        Logger.format("Trying to assign transition to check from existing %s", existingActions.keySet());
 
         // Assign new transition to check
         // First check existing transitions
-        for (FocusTransition transition : existingTransitions.keySet()) {
-            if (transition.source.equals(newState.getActivity())) {
-                for (LogAction logAction : existingTransitions.get(transition)) {
-                    ModelAction modelAction = modelActionFromLogAction(logAction);
-                    if (modelAction != null && !modelAction.isVisited()) {
-                        this.currentTransitionToCheck = transition;
-                        return modelAction;
-                    }
+        for (LogActivity activity : existingActions.keySet()) {
+            for (LogAction action : existingActions.get(activity)) {
+                ModelAction modelAction = modelActionFromLogAction(action);
+                if (modelAction != null && !modelAction.isVisited()) {
+                    return modelAction;
                 }
             }
         }
 
-        Logger.format("Trying to assign transition to check from new transitions %s", newTransitions.keySet());
+
+        Logger.format("Trying to assign transition to check from outside to skip %s", toSkipActions.keySet());
 
         // Next check new transitions
-        for (FocusTransition transition : newTransitions.keySet()) {
-            if (transition.source.equals(newState.getActivity())) {
+        for (ModelAction modelAction : newState.targetedActions()) {
+            String modelActionResourceId = getResourceId(modelAction.getTarget().toXPath());
 
-                for (ModelAction modelAction : newState.targetedActions()) {
-                    String modelActionResourceId = getResourceId(modelAction.getTarget().toXPath());
+            boolean found = false;
+            for (LogActivity activity : toSkipActions.keySet()) {
+                for (LogAction action : toSkipActions.get(activity)) {
 
-                    boolean found = false;
-                    for (LogAction logAction : newTransitions.get(transition)) {
-                        String resourceId = getResourceId(logAction.targetXpath);
+                    String resourceId = getResourceId(action.targetXpath);
 
-                        if (modelActionResourceId.equals(resourceId) &&
-                                logAction.actionType.equals(modelAction.getType())) {
+                    if (modelActionResourceId.equals(resourceId) && action.actionType.equals(modelAction.getType())) {
 
-                            found = true;
-                            break;
-                        }
-                    }
-
-                    if (!found && !modelAction.isVisited()) {
-                        this.currentTransitionToCheck = transition;
-                        return modelAction;
+                        found = true;
+                        break;
                     }
                 }
+                if (found) {
+                    break;
+                }
+            }
+
+            if (!found && !modelAction.isVisited()) {
+                return modelAction;
             }
         }
 
@@ -807,34 +796,29 @@ public class DiffBasedAgent extends StatefulAgent {
     }
 
 
-    private Action exploringModeAction() {
+    private Action checkAction() {
 
-        if (currentTransitionToCheck != null) {
+        // Found a transition, there is an edge in the ATG
+        if (newState.getActivity().equals(transition.target)) {
 
-            Logger.format("Current transition to check is %s", currentTransitionToCheck);
+            Logger.format("Transition found between %s and %s!", transition.source, transition.target);
+            return null; // Finished
 
-            // Found a transition, there is an edge in the ATG
-            if (newState.getActivity().equals(currentTransitionToCheck.target)) {
-
-                Logger.format("Transition found between %s and %s!", currentTransitionToCheck.source, currentTransitionToCheck.target);
-
-                if (existingTransitions.containsKey(currentTransitionToCheck)) {
-                    existingTransitions.remove(currentTransitionToCheck);
-                }
-                if (newTransitions.containsKey(currentTransitionToCheck)) {
-                    newTransitions.remove(currentTransitionToCheck);
-                }
-
-                currentTransitionToCheck = null;
-            } else {
-                Logger.format("Target differs from transition target, moving to next transition");
-            }
+        } else {
+            Logger.format("Target %s differs from transition target %s", newState.getActivity(), transition.target);
         }
+
+        return findNextPath();
+    }
+
+
+    private Action chooseActionToCheck() {
 
         Action action = assignTransitionToCheck();
 
         // New transition to check from same activity
         if (action != null) {
+            mode = Mode.CHECKING;
             return action;
         }
 
@@ -845,7 +829,7 @@ public class DiffBasedAgent extends StatefulAgent {
         if (!getActivitiesToReach().isEmpty()) {
             return findNextPath();
         } else {
-            return null; // Finished?
+            return null; // Finished and did not find transition
         }
 
     }
@@ -879,28 +863,22 @@ public class DiffBasedAgent extends StatefulAgent {
 
         LogActivity target = logActivityPath.get(logActivityPath.size()-1);
 
-        if (mode == Mode.REACHING || mode == Mode.DESPERATE) {
+        if (mode == Mode.REACHING) {
 
             Logger.format("Looking for target", target);
 
             if (target.activity.equals(newState.getActivity())) {
 
-                if (mode == Mode.REACHING) {
-                    Logger.format("Reached target activity %s, moving to mode EXPLORING", target);
-                    mode = Mode.EXPLORING;
-                    return exploringModeAction();
-                }
-                if (mode == Mode.DESPERATE) {
-                    Logger.format("Desperately reached an activity %s from which we can find next path", target);
-                    return findNextPath();
-                }
+                Logger.format("Reached target activity %s, moving to mode CHECKING", target);
+                return chooseActionToCheck();
+
             }
 
-            return reachingModeAction();
+            return chooseActionToReach();
         }
 
-        if (mode == Mode.EXPLORING) {
-            return exploringModeAction();
+        if (mode == Mode.CHECKING) {
+            return checkAction();
         }
 
         Logger.println("Null action");
