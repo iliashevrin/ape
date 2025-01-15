@@ -153,8 +153,6 @@ public class DiffBasedAgent extends StatefulAgent {
     // Activity -> Activity -> Set of Actions
     private Map<LogActivity, Map<LogActivity, Set<LogAction>>> graph = new HashMap<>();
 
-    private Set<LogActivity> checkedActivities = new HashSet<>();
-
     private Map<LogActivity, Set<LogActivity>> invalidMapping = new HashMap<>();
 
 
@@ -521,15 +519,11 @@ public class DiffBasedAgent extends StatefulAgent {
         Set<LogActivity> toReach = new HashSet<>();
         if (!this.existingActions.isEmpty()) {
             for (LogActivity activity : this.existingActions.keySet()) {
-                if (!checkedActivities.contains(activity)) {
-                    toReach.add(activity);
-                }
+                toReach.add(activity);
             }
         } else {
             for (LogActivity activity : this.toSkipActions.keySet()) {
-                if (!checkedActivities.contains(activity)) {
-                    toReach.add(activity);
-                }
+                toReach.add(activity);
             }
         }
         return toReach;
@@ -589,11 +583,7 @@ public class DiffBasedAgent extends StatefulAgent {
         if (newAction == null) {
 
             Logger.format("None of the possible actions from %s to %s are valid", currentLogActivity, nextLogActivity);
-            LogActivity fromState = logActivityFromState(newState);
-            if (!invalidMapping.containsKey(fromState)) {
-                invalidMapping.put(fromState, new HashSet<LogActivity>());
-            }
-            invalidMapping.get(fromState).add(currentLogActivity);
+            addInvalidMapping(newState, currentLogActivity);
 
             // All actions towards current focus activity didn't work
             // Maybe it will be possible to reach it via other changed activities
@@ -608,6 +598,14 @@ public class DiffBasedAgent extends StatefulAgent {
         }
 
         return newAction;
+    }
+
+    private void addInvalidMapping(State state, LogActivity activity) {
+        LogActivity fromState = logActivityFromState(state);
+        if (!invalidMapping.containsKey(fromState)) {
+            invalidMapping.put(fromState, new HashSet<LogActivity>());
+        }
+        invalidMapping.get(fromState).add(activity);
     }
 
     private LogActivity logActivityFromState(State state) {
@@ -680,11 +678,7 @@ public class DiffBasedAgent extends StatefulAgent {
             if (path != null && validateFirstStepInPath(path)) {
                 candidatePaths.add(path);
             } else {
-                LogActivity fromState = logActivityFromState(newState);
-                if (!invalidMapping.containsKey(fromState)) {
-                    invalidMapping.put(fromState, new HashSet<LogActivity>());
-                }
-                invalidMapping.get(fromState).add(source);
+                addInvalidMapping(newState, source);
             }
         }
 
@@ -829,7 +823,8 @@ public class DiffBasedAgent extends StatefulAgent {
             return action;
         }
 
-        checkedActivities.add(logActivityPath.get(logActivityPath.size() - 1));
+        addInvalidMapping(newState, logActivityPath.get(logActivityPath.size() - 1));
+
         Logger.format("Current source %s does not match any new action to check, looking for a next path", newState.getActivity());
 
         // Choose a new focus action and start again
@@ -877,13 +872,7 @@ public class DiffBasedAgent extends StatefulAgent {
 
             if (!currentLogActivity.activity.equals(newState.getActivity())) {
 
-                LogActivity fromState = logActivityFromState(currentState);
-                if (!invalidMapping.containsKey(fromState)) {
-                    invalidMapping.put(fromState, new HashSet<LogActivity>());
-                }
-                LogActivity previousLogActivity = logActivityPath.get(logActivityPath.indexOf(currentLogActivity)-1);
-                invalidMapping.get(fromState).add(previousLogActivity);
-
+                addInvalidMapping(curentState, logActivityPath.get(logActivityPath.indexOf(currentLogActivity)-1));
 
                 Logger.format("Activity %s from the path is invalid according to state %s, looking for another path", currentLogActivity, newState.getActivity());
                 return findNextPath();
