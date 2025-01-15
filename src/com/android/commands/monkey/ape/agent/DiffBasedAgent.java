@@ -872,7 +872,7 @@ public class DiffBasedAgent extends StatefulAgent {
 
             if (!currentLogActivity.activity.equals(newState.getActivity())) {
 
-                addInvalidMapping(curentState, logActivityPath.get(logActivityPath.indexOf(currentLogActivity)-1));
+                addInvalidMapping(currentState, logActivityPath.get(logActivityPath.indexOf(currentLogActivity)-1));
 
                 Logger.format("Activity %s from the path is invalid according to state %s, looking for another path", currentLogActivity, newState.getActivity());
                 return findNextPath();
